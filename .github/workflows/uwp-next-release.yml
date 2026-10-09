@@ -10,7 +10,7 @@ on:
       version:
         description: "Release Version"
         required: true
-        default: "1.5.7.1"
+        default: "1.5.7.2"
 
 permissions:
   contents: write
@@ -62,6 +62,21 @@ jobs:
           git -C uwp-deps checkout --detach $env:UWP_DEPS_COMMIT
           if ((git -C uwp-deps rev-parse HEAD) -ne $env:UWP_DEPS_COMMIT) {
               throw 'Unexpected UWP dependency revision.'
+          }
+
+      - name: Patch Mesa for Xbox One Shader Model 6.0
+        shell: pwsh
+        run: |
+          $dll = "uwp-deps\x64\bin\libgallium_wgl.dll"
+          if (Test-Path -LiteralPath $dll) {
+              $bytes = [IO.File]::ReadAllBytes($dll)
+              if ($bytes.Length -gt 0x005badd6 -and $bytes[0x005badd5] -eq 0x73 -and $bytes[0x005badd6] -eq 0x50) {
+                  $bytes[0x005badd5] = 0xeb
+                  [IO.File]::WriteAllBytes($dll, $bytes)
+                  Write-Output "Successfully patched Mesa D3D12 for Xbox One SM6.0 support."
+              } else {
+                  Write-Output "Mesa D3D12 byte pattern already patched or mismatched."
+              }
           }
 
       - name: Fetch GLES headers
@@ -145,5 +160,4 @@ jobs:
             --repo $env:GITHUB_REPOSITORY `
             --target UWP-Auto `
             --title 'OpenCE UWP ${{ inputs.version }}' `
-            --notes "Built OpenCE UWP for Xbox One from revision ${{ inputs.revision }}." `
-            --clobber
+            --notes "Built OpenCE UWP for Xbox One from revision ${{ inputs.revision }}."

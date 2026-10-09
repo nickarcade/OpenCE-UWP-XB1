@@ -13,6 +13,16 @@ if (-not (Test-Path -LiteralPath $UwpDeps)) {
     throw "UWP dependency directory was not found: $UwpDeps"
 }
 
+$gallium = Join-Path $UwpDeps 'x64\bin\libgallium_wgl.dll'
+if (Test-Path -LiteralPath $gallium) {
+    $bytes = [IO.File]::ReadAllBytes($gallium)
+    if ($bytes.Length -gt 0x005badd6 -and $bytes[0x005badd5] -eq 0x73 -and $bytes[0x005badd6] -eq 0x50) {
+        $bytes[0x005badd5] = 0xeb
+        [IO.File]::WriteAllBytes($gallium, $bytes)
+        Write-Output "Patched $gallium for Xbox One Shader Model 6.0 support."
+    }
+}
+
 Push-Location $source
 try {
     & py -3 configure.py --release --pgo=off

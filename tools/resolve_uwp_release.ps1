@@ -17,7 +17,7 @@ $releases = foreach ($line in $refs) {
 }
 if (-not $releases) { throw 'No OpenCE build tags were found.' }
 
-$release = $releases | Sort-Object Build -Descending | Select-Object -First 1
+$release = $releases | Where-Object Build -le 157 | Sort-Object Build -Descending | Select-Object -First 1
 
 $release | Add-Member Version ('{0}.{1}.{2}.0' -f `
     [math]::Floor($release.Build / 100),

@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <io.h>
 
 static std::mutex log_mutex;
 static FILE *log_file;
@@ -97,6 +98,13 @@ static void open_log_at(const std::filesystem::path &root)
     std::error_code error;
     std::filesystem::create_directories(root, error);
     _wfopen_s(&log_file, (root / L"opence.log").c_str(), L"w");
+    if (log_file) {
+        int fd = _fileno(log_file);
+        if (fd >= 0) {
+            _dup2(fd, 1);
+            _dup2(fd, 2);
+        }
+    }
 }
 
 extern "C" int GUEST_ABI host_decompress_map(const char *source_path,
@@ -209,13 +217,27 @@ static LONG WINAPI log_vectored_exception(EXCEPTION_POINTERS *details)
             code == EXCEPTION_STACK_OVERFLOW ||
             code == 0xC0000008 /* STATUS_INVALID_HANDLE */) {
             const EXCEPTION_RECORD *record = details->ExceptionRecord;
-            const CONTEXT *context = details->ContextRecord;
+            PCONTEXT context = details->ContextRecord;
             host_logf(HOST_LOG_ERROR,
                 "FATAL EXCEPTION code=%08lx address=%p rip=%016llx rsp=%016llx "
                 "rax=%016llx rbx=%016llx rcx=%016llx rdx=%016llx rsi=%016llx rdi=%016llx",
                 record->ExceptionCode, record->ExceptionAddress,
                 context->Rip, context->Rsp, context->Rax, context->Rbx,
                 context->Rcx, context->Rdx, context->Rsi, context->Rdi);
+
+            if (code == EXCEPTION_ACCESS_VIOLATION) {
+                HMODULE gallium = GetModuleHandleW(L"libgallium_wgl.dll");
+                if (gallium) {
+                    uintptr_t base = (uintptr_t)gallium;
+                    uintptr_t fault_addr = (uintptr_t)record->ExceptionAddress;
+                    if (fault_addr == base + 0x586685) {
+                        host_logf(HOST_LOG_WARN,
+                            "recovered from libgallium_wgl NULL shader dereference at RVA 0x586685; advancing Rip");
+                        context->Rip = fault_addr + 0x19;
+                        return EXCEPTION_CONTINUE_EXECUTION;
+                    }
+                }
+            }
         }
     }
     return EXCEPTION_CONTINUE_SEARCH;
@@ -315,6 +337,9 @@ extern "C" int SDL_main(int, char **)
     std::filesystem::path local(local_w.c_str());
     std::filesystem::path internal = local / L"OpenCE";
     open_log_at(internal);
+    _putenv("D3D12_DEBUG=experimental");
+    _putenv("DXIL_DEBUG=verbose");
+    _putenv("MESA_DEBUG=1");
     typedef LONG (WINAPI *host_veh_handler_t)(struct _EXCEPTION_POINTERS *ExceptionInfo);
     typedef PVOID (WINAPI *host_aveh_t)(ULONG First, host_veh_handler_t Handler);
     HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
@@ -323,7 +348,7 @@ extern "C" int SDL_main(int, char **)
         if (add_veh) add_veh(1, (host_veh_handler_t)log_vectored_exception);
     }
     SetUnhandledExceptionFilter(log_unhandled_exception);
-    host_logf(HOST_LOG_INFO, "OpenCE UWP x64 host 1.4.8.0 starting");
+    host_logf(HOST_LOG_INFO, "OpenCE UWP x64 host 1.5.7.2 starting");
     int physical_width = 1920, physical_height = 1080;
     uwp_SetScreenSize(physical_width, physical_height);
     host_sdl_set_backbuffer_size(physical_width, physical_height);

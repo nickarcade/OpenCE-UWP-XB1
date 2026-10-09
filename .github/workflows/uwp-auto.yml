@@ -109,6 +109,22 @@ jobs:
               throw 'Unexpected UWP dependency revision.'
           }
 
+      - name: Patch Mesa for Xbox One Shader Model 6.0
+        if: steps.gate.outputs.build == 'true'
+        shell: pwsh
+        run: |
+          $dll = "uwp-deps\x64\bin\libgallium_wgl.dll"
+          if (Test-Path -LiteralPath $dll) {
+              $bytes = [IO.File]::ReadAllBytes($dll)
+              if ($bytes.Length -gt 0x005badd6 -and $bytes[0x005badd5] -eq 0x73 -and $bytes[0x005badd6] -eq 0x50) {
+                  $bytes[0x005badd5] = 0xeb
+                  [IO.File]::WriteAllBytes($dll, $bytes)
+                  Write-Output "Successfully patched Mesa D3D12 for Xbox One SM6.0 support."
+              } else {
+                  Write-Output "Mesa D3D12 byte pattern already patched or mismatched."
+              }
+          }
+
       - name: Fetch GLES headers
         if: steps.gate.outputs.build == 'true'
         shell: pwsh
@@ -246,5 +262,4 @@ jobs:
             --target UWP-Auto `
             --prerelease `
             --title 'OpenCE UWP ${{ steps.release.outputs.version }}' `
-            --notes "Built from OpenCE ${{ steps.release.outputs.tag }} (${{ steps.release.outputs.commit }}) with a $signing signing certificate." `
-            --clobber
+            --notes "Built from OpenCE ${{ steps.release.outputs.tag }} (${{ steps.release.outputs.commit }}) with a $signing signing certificate."
