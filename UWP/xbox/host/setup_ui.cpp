@@ -210,8 +210,9 @@ bool xbox_show_setup_ui(const std::filesystem::path &local_root,
         host_logf(HOST_LOG_ERROR, "setup UI: SDL initialization failed: %s", SDL_GetError());
         return false;
     }
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_Window *window = SDL_CreateWindow("OpenCE Setup", SDL_WINDOWPOS_CENTERED,
         SDL_WINDOWPOS_CENTERED, screen_width, screen_height,
@@ -238,7 +239,7 @@ bool xbox_show_setup_ui(const std::filesystem::path &local_root,
     const float ui_scale = std::clamp(float(screen_height) / 1080.0f, 1.0f, 2.0f);
     io.FontGlobalScale = ui_scale;
     style_launcher(ui_scale);
-    if (!ImGui_ImplSDL2_InitForOpenGL(window, context) || !ImGui_ImplOpenGL3_Init("#version 120")) {
+    if (!ImGui_ImplSDL2_InitForOpenGL(window, context) || !ImGui_ImplOpenGL3_Init("#version 130")) {
         host_logf(HOST_LOG_ERROR, "setup UI: ImGui initialization failed");
         ImGui::DestroyContext();
         SDL_GL_DeleteContext(context);

@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <io.h>
+#include <share.h>
 
 static std::mutex log_mutex;
 static FILE *log_file;
@@ -97,7 +98,7 @@ static void open_log_at(const std::filesystem::path &root)
     }
     std::error_code error;
     std::filesystem::create_directories(root, error);
-    _wfopen_s(&log_file, (root / L"opence.log").c_str(), L"w");
+    log_file = _wfsopen((root / L"opence.log").c_str(), L"w", _SH_DENYNO);
     if (log_file) {
         int fd = _fileno(log_file);
         if (fd >= 0) {
@@ -348,7 +349,7 @@ extern "C" int SDL_main(int, char **)
         if (add_veh) add_veh(1, (host_veh_handler_t)log_vectored_exception);
     }
     SetUnhandledExceptionFilter(log_unhandled_exception);
-    host_logf(HOST_LOG_INFO, "OpenCE UWP x64 host 1.5.7.2 starting");
+    host_logf(HOST_LOG_INFO, "OpenCE UWP x64 host 1.5.7.3 starting");
     int physical_width = 1920, physical_height = 1080;
     uwp_SetScreenSize(physical_width, physical_height);
     host_sdl_set_backbuffer_size(physical_width, physical_height);
