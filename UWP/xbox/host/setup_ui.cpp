@@ -262,7 +262,7 @@ bool xbox_show_setup_ui(const std::filesystem::path &local_root,
         }
         if (auto core = CoreWindow::GetForCurrentThread())
             core.Dispatcher().ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
-        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplDX11_NewFrame();
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
 

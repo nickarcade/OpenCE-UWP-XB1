@@ -15,16 +15,21 @@ Replaces d3d8_gl.c and Mesa D3D12 with a native, zero-dependency Direct3D 11 ren
 extern "C" {
 #endif
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
 #ifndef DWORD
 typedef uint32_t DWORD;
 #endif
-
 #ifndef HRESULT
 typedef long HRESULT;
 #endif
-
 #ifndef BOOL
 typedef int BOOL;
+#endif
 #endif
 
 /* Initialization and Host Lifecycle */

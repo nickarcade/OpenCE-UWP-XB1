@@ -15,19 +15,24 @@ Direct3D 11 translation layer for OpenCE on Windows / Xbox One UWP.
 extern "C" {
 #endif
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
 #ifndef DWORD
 typedef uint32_t DWORD;
 #endif
-
 #ifndef BOOL
 typedef int BOOL;
 #endif
-
 #ifndef TRUE
 #define TRUE 1
 #endif
 #ifndef FALSE
 #define FALSE 0
+#endif
 #endif
 
 #define NV2A_HLSL_VERTEX_ATTRIBUTE_COUNT 16
