@@ -4,8 +4,10 @@
 #include <Windows.h>
 #include <SDL.h>
 #include <imgui.h>
-#include <imgui_impl_opengl3.h>
+#include <imgui_impl_dx11.h>
 #include <imgui_impl_sdl2.h>
+#include "d3d8_dx11.h"
+#include <d3d11.h>
 #include <libuwp.h>
 #include <winrt/base.h>
 #include <winrt/Windows.Foundation.Collections.h>
@@ -210,23 +212,23 @@ bool xbox_show_setup_ui(const std::filesystem::path &local_root,
         host_logf(HOST_LOG_ERROR, "setup UI: SDL initialization failed: %s", SDL_GetError());
         return false;
     }
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 5);
-    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
-    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 0);
     SDL_Window *window = SDL_CreateWindow("OpenCE Setup", SDL_WINDOWPOS_CENTERED,
         SDL_WINDOWPOS_CENTERED, screen_width, screen_height,
-        SDL_WINDOW_SHOWN | SDL_WINDOW_OPENGL);
-    SDL_GLContext context = window ? SDL_GL_CreateContext(window) : nullptr;
-    if (!window || !context || SDL_GL_MakeCurrent(window, context) != 0) {
-        host_logf(HOST_LOG_ERROR, "setup UI: OpenGL window failed: %s", SDL_GetError());
-        if (context) SDL_GL_DeleteContext(context);
-        if (window) SDL_DestroyWindow(window);
+        SDL_WINDOW_SHOWN);
+    if (!window) {
+        host_logf(HOST_LOG_ERROR, "setup UI: SDL window failed: %s", SDL_GetError());
         return false;
     }
-    SDL_GL_SetSwapInterval(1);
+
+    auto core_window = winrt::Windows::UI::Core::CoreWindow::GetForCurrentThread();
+    if (!d3d8_dx11_initialize_uwp(winrt::get_unknown(core_window), screen_width, screen_height)) {
+        host_logf(HOST_LOG_ERROR, "setup UI: Direct3D 11 initialization failed");
+        SDL_DestroyWindow(window);
+        return false;
+    }
+
+    ID3D11Device *d3d_dev = static_cast<ID3D11Device *>(d3d8_dx11_get_device());
+    ID3D11DeviceContext *d3d_ctx = static_cast<ID3D11DeviceContext *>(d3d8_dx11_get_context());
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -235,32 +237,14 @@ bool xbox_show_setup_ui(const std::filesystem::path &local_root,
     io.ConfigNavCursorVisibleAlways = true;
     io.IniFilename = nullptr;
     int window_width = 0, window_height = 0;
-    int drawable_width = 0, drawable_height = 0;
     SDL_GetWindowSize(window, &window_width, &window_height);
-    SDL_GL_GetDrawableSize(window, &drawable_width, &drawable_height);
     const float ui_scale = std::clamp(float(screen_height) / 1080.0f, 1.0f, 2.0f);
     io.FontGlobalScale = ui_scale;
     style_launcher(ui_scale);
-    if (!ImGui_ImplSDL2_InitForOpenGL(window, context) || !ImGui_ImplOpenGL3_Init("#version 130")) {
+    if (!ImGui_ImplSDL2_InitForD3D(window) || !ImGui_ImplDX11_Init(d3d_dev, d3d_ctx)) {
         host_logf(HOST_LOG_ERROR, "setup UI: ImGui initialization failed");
         ImGui::DestroyContext();
-        SDL_GL_DeleteContext(context);
-        SDL_DestroyWindow(window);
-        return false;
-    }
-
-    using viewport_proc = void (*)(int, int, int, int);
-    using clear_color_proc = void (*)(float, float, float, float);
-    using clear_proc = void (*)(unsigned int);
-    const auto viewport = reinterpret_cast<viewport_proc>(SDL_GL_GetProcAddress("glViewport"));
-    const auto clear_color = reinterpret_cast<clear_color_proc>(SDL_GL_GetProcAddress("glClearColor"));
-    const auto clear = reinterpret_cast<clear_proc>(SDL_GL_GetProcAddress("glClear"));
-    if (!viewport || !clear_color || !clear) {
-        host_logf(HOST_LOG_ERROR, "setup UI: required OpenGL functions are unavailable");
-        ImGui_ImplOpenGL3_Shutdown();
-        ImGui_ImplSDL2_Shutdown();
-        ImGui::DestroyContext();
-        SDL_GL_DeleteContext(context);
+        d3d8_dx11_shutdown();
         SDL_DestroyWindow(window);
         return false;
     }
@@ -386,18 +370,15 @@ bool xbox_show_setup_ui(const std::filesystem::path &local_root,
         ImGui::End();
 
         ImGui::Render();
-        SDL_GL_GetDrawableSize(window, &drawable_width, &drawable_height);
-        viewport(0, 0, drawable_width, drawable_height);
-        clear_color(4.0f / 255.0f, 12.0f / 255.0f, 5.0f / 255.0f, 1.0f);
-        clear(0x00004000u);
-        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-        SDL_GL_SwapWindow(window);
+        d3d8_dx11_set_viewport(0, 0, screen_width, screen_height, 0.0f, 1.0f);
+        d3d8_dx11_clear(1, 0xFF040C05, 1.0f, 0);
+        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+        d3d8_dx11_present(1);
         if (first_frame) {
             host_logf(HOST_LOG_INFO,
-                "setup UI: window=%dx%d drawable=%dx%d imgui=%.0fx%.0f framebuffer=%.2fx%.2f scale=%.2f",
-                window_width, window_height, drawable_width, drawable_height,
-                io.DisplaySize.x, io.DisplaySize.y,
-                io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y, ui_scale);
+                "setup UI: window=%dx%d imgui=%.0fx%.0f scale=%.2f (Direct3D 11)",
+                window_width, window_height,
+                io.DisplaySize.x, io.DisplaySize.y, ui_scale);
             first_frame = false;
         }
     }
@@ -406,10 +387,9 @@ bool xbox_show_setup_ui(const std::filesystem::path &local_root,
         image = std::filesystem::path(to_hstring(state->selected_image_path).c_str());
         destination = std::filesystem::path(to_hstring(state->destination_path).c_str());
     }
-    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplDX11_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
-    SDL_GL_DeleteContext(context);
     SDL_DestroyWindow(window);
     SDL_Quit();
     return state->install;

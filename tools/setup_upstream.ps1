@@ -28,6 +28,9 @@ $portDestination = Join-Path $SourceDirectory 'port\xbox'
 New-Item -ItemType Directory -Path $portDestination -Force | Out-Null
 Copy-Item -Path (Join-Path $root 'UWP\xbox\*') -Destination $portDestination -Recurse -Force
 
+$windowsDestination = Join-Path $SourceDirectory 'port\windows\src'
+Copy-Item -Path (Join-Path $root 'port\windows\src\*') -Destination $windowsDestination -Force
+
 $toolNames = @(
     'android_gl_stubs.py', 'generate_xbox_assets.ps1', 'musl_headers.py', 'package_xbox.ps1',
     'sign_xbox.ps1', 'xbox_build.py',

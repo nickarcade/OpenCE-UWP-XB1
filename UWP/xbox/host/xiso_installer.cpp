@@ -5,8 +5,10 @@
 #include <Windows.h>
 #include <SDL.h>
 #include <imgui.h>
-#include <imgui_impl_opengl3.h>
+#include <imgui_impl_dx11.h>
 #include <imgui_impl_sdl2.h>
+#include "d3d8_dx11.h"
+#include <d3d11.h>
 #include <libuwp.h>
 #include <winrt/base.h>
 #include <winrt/Windows.Foundation.h>
@@ -183,28 +185,29 @@ public:
         }
         ui_scale_ = std::clamp(float(screen_height_) / 1080.0f, 1.0f, 2.0f);
         uwp_SetScreenSize(screen_width_, screen_height_);
-        host_logf(HOST_LOG_INFO, "installer progress: Xbox output requested at %dx%d",
+        host_logf(HOST_LOG_INFO, "installer progress: Xbox output requested at %dx%d (Direct3D 11)",
             screen_width_, screen_height_);
         if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
             host_logf(HOST_LOG_ERROR, "installer: SDL initialization failed: %s", SDL_GetError());
             return;
         }
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
-        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
-        SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+
+        void *core_window = nullptr;
+        if (auto core = CoreWindow::GetForCurrentThread())
+            core_window = winrt::get_abi(core);
+        if (!d3d8_dx11_initialize_uwp(core_window, screen_width_, screen_height_)) {
+            host_logf(HOST_LOG_ERROR, "installer: Direct3D 11 initialization failed");
+            return;
+        }
+
         window_ = SDL_CreateWindow("OpenCE game data installer", SDL_WINDOWPOS_CENTERED,
             SDL_WINDOWPOS_CENTERED, screen_width_, screen_height_,
-            SDL_WINDOW_SHOWN | SDL_WINDOW_OPENGL);
+            SDL_WINDOW_SHOWN);
         if (!window_) {
             host_logf(HOST_LOG_ERROR, "installer: progress window failed: %s", SDL_GetError());
             return;
         }
-        context_ = SDL_GL_CreateContext(window_);
-        if (!context_ || SDL_GL_MakeCurrent(window_, context_) != 0) {
-            host_logf(HOST_LOG_ERROR, "installer: progress context failed: %s", SDL_GetError());
-            return;
-        }
-        SDL_GL_SetSwapInterval(1);
+
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
         auto &io = ImGui::GetIO();
@@ -221,23 +224,20 @@ public:
         style.Colors[ImGuiCol_PlotHistogram] = ImVec4(0.08f, 0.68f, 0.12f, 1.0f);
         style.Colors[ImGuiCol_FrameBg] = ImVec4(0.07f, 0.14f, 0.08f, 1.0f);
         style.ScaleAllSizes(ui_scale_);
-        imgui_ready_ = ImGui_ImplSDL2_InitForOpenGL(window_, context_) &&
-            ImGui_ImplOpenGL3_Init("#version 120");
-        clear_color_ = reinterpret_cast<clear_color_proc>(SDL_GL_GetProcAddress("glClearColor"));
-        clear_ = reinterpret_cast<clear_proc>(SDL_GL_GetProcAddress("glClear"));
-        viewport_ = reinterpret_cast<viewport_proc>(SDL_GL_GetProcAddress("glViewport"));
+        imgui_ready_ = ImGui_ImplSDL2_InitForOther(window_) &&
+            ImGui_ImplDX11_Init(static_cast<ID3D11Device *>(d3d8_dx11_get_device()),
+                                static_cast<ID3D11DeviceContext *>(d3d8_dx11_get_context()));
         draw(0, 1);
     }
 
     ~progress_window()
     {
         if (imgui_ready_) {
-            ImGui_ImplOpenGL3_Shutdown();
+            ImGui_ImplDX11_Shutdown();
             ImGui_ImplSDL2_Shutdown();
         }
         if (ImGui::GetCurrentContext())
             ImGui::DestroyContext();
-        if (context_) SDL_GL_DeleteContext(context_);
         if (window_) SDL_DestroyWindow(window_);
     }
 
@@ -251,7 +251,7 @@ public:
                 (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE))
                 return false;
         }
-        if (!context_ || !clear_color_ || !clear_ || !viewport_ || !imgui_ready_)
+        if (!imgui_ready_)
             return true;
         if (auto core = CoreWindow::GetForCurrentThread())
             core.Dispatcher().ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
@@ -260,12 +260,8 @@ public:
         std::snprintf(title, sizeof(title), "OpenCE game data installer - %llu%%",
             static_cast<unsigned long long>(percent));
         SDL_SetWindowTitle(window_, title);
-        int drawable_width = screen_width_, drawable_height = screen_height_;
-        SDL_GL_GetDrawableSize(window_, &drawable_width, &drawable_height);
-        viewport_(0, 0, drawable_width, drawable_height);
-        clear_color_(4.0f / 255.0f, 12.0f / 255.0f, 5.0f / 255.0f, 1.0f);
-        clear_(0x00004000u); /* GL_COLOR_BUFFER_BIT */
-        ImGui_ImplOpenGL3_NewFrame();
+
+        ImGui_ImplDX11_NewFrame();
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
         auto &io = ImGui::GetIO();
@@ -287,30 +283,24 @@ public:
             ImVec2(-1.0f, 46.0f * ui_scale_), overlay);
         ImGui::End();
         ImGui::Render();
-        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-        SDL_GL_SwapWindow(window_);
+        d3d8_dx11_set_viewport(0, 0, screen_width_, screen_height_, 0.0f, 1.0f);
+        d3d8_dx11_clear(1, 0xFF040C05, 1.0f, 0);
+        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+        d3d8_dx11_present(1);
         if (!logged_dimensions_) {
             int window_width = 0, window_height = 0;
             SDL_GetWindowSize(window_, &window_width, &window_height);
             host_logf(HOST_LOG_INFO,
-                "installer progress: window=%dx%d drawable=%dx%d imgui=%.0fx%.0f framebuffer=%.2fx%.2f scale=%.2f",
-                window_width, window_height, drawable_width, drawable_height,
-                io.DisplaySize.x, io.DisplaySize.y,
-                io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y, ui_scale_);
+                "installer progress: window=%dx%d imgui=%.0fx%.0f scale=%.2f (Direct3D 11)",
+                window_width, window_height,
+                io.DisplaySize.x, io.DisplaySize.y, ui_scale_);
             logged_dimensions_ = true;
         }
         return true;
     }
 
 private:
-    using clear_color_proc = void (*)(float, float, float, float);
-    using clear_proc = void (*)(unsigned int);
-    using viewport_proc = void (*)(int, int, int, int);
     SDL_Window *window_ = nullptr;
-    SDL_GLContext context_ = nullptr;
-    clear_color_proc clear_color_ = nullptr;
-    clear_proc clear_ = nullptr;
-    viewport_proc viewport_ = nullptr;
     bool imgui_ready_ = false;
     bool logged_dimensions_ = false;
     int screen_width_ = 1920;

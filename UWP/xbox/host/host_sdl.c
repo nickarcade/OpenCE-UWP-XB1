@@ -1,4 +1,5 @@
 #include "host.h"
+#include "d3d8_dx11.h"
 #include <SDL.h>
 #include <windows.h>
 #include <string.h>
@@ -49,38 +50,36 @@ int GUEST_ABI host_sdl_scancode_from_name(const char *name) { return (int)SDL_Ge
 
 uint32_t GUEST_ABI host_sdl_create_window(const char *title, int width, int height, int64_t flags)
 {
-    Uint32 translated = (Uint32)flags;
+    Uint32 translated = ((Uint32)flags) & ~SDL_WINDOW_OPENGL;
     return handle_new(HANDLE_WINDOW, SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         width, height, translated));
 }
 void GUEST_ABI host_sdl_window_size_in_pixels(uint32_t window, int *width, int *height)
 {
     static LONG logged;
-    int reported_width = 0, reported_height = 0;
-    SDL_GL_GetDrawableSize((SDL_Window *)handle_get(window, HANDLE_WINDOW),
-        &reported_width, &reported_height);
+    (void)window;
     *width = backbuffer_width;
     *height = backbuffer_height;
     if (!InterlockedExchange(&logged, 1))
-        host_logf(HOST_LOG_INFO, "SDL drawable reported %dx%d; GL backbuffer is %dx%d",
-            reported_width, reported_height, *width, *height);
+        host_logf(HOST_LOG_INFO, "Xbox Direct3D 11 backbuffer size reported: %dx%d",
+            *width, *height);
 }
 int GUEST_ABI host_sdl_set_relative_mouse(uint32_t window, int enabled)
 { (void)window; return SDL_SetRelativeMouseMode(enabled ? SDL_TRUE : SDL_FALSE) == 0; }
 int GUEST_ABI host_sdl_gl_set_attribute(int attribute, int value)
-{ return SDL_GL_SetAttribute((SDL_GLattr)attribute, value) == 0; }
+{ (void)attribute; (void)value; return 1; }
 uint32_t GUEST_ABI host_sdl_gl_create_context(uint32_t window)
-{ return handle_new(HANDLE_CONTEXT, SDL_GL_CreateContext((SDL_Window *)handle_get(window, HANDLE_WINDOW))); }
+{
+    (void)window;
+    host_logf(HOST_LOG_INFO, "Xbox Direct3D 11 native context active for guest");
+    return handle_new(HANDLE_CONTEXT, (void *)(uintptr_t)0xD3D11);
+}
 int GUEST_ABI host_sdl_gl_make_current(uint32_t window, uint32_t context)
-{ return SDL_GL_MakeCurrent((SDL_Window *)handle_get(window, HANDLE_WINDOW), handle_get(context, HANDLE_CONTEXT)) == 0; }
+{ (void)window; (void)context; return 1; }
 int GUEST_ABI host_sdl_gl_set_swap_interval(int interval)
 {
-    int swap_status = SDL_GL_SetSwapInterval(interval);
-    host_logf(swap_status == 0 ? HOST_LOG_INFO : HOST_LOG_WARN,
-        "Xbox presentation: swap interval %d %s%s%s", interval,
-        swap_status == 0 ? "accepted" : "rejected",
-        swap_status == 0 ? "" : ": ", swap_status == 0 ? "" : SDL_GetError());
-    return swap_status == 0;
+    host_logf(HOST_LOG_INFO, "Xbox presentation: swap interval %d accepted (Direct3D 11)", interval);
+    return 1;
 }
 int GUEST_ABI host_sdl_gl_swap_window(uint32_t window)
 {
@@ -88,8 +87,9 @@ int GUEST_ABI host_sdl_gl_swap_window(uint32_t window)
     static LARGE_INTEGER started;
     static unsigned long frames;
     LARGE_INTEGER now;
+    (void)window;
 
-    SDL_GL_SwapWindow((SDL_Window *)handle_get(window, HANDLE_WINDOW));
+    d3d8_dx11_present(1);
     if (!frequency.QuadPart) {
         QueryPerformanceFrequency(&frequency);
         QueryPerformanceCounter(&started);

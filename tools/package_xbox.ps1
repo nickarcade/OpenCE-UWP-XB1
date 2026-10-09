@@ -4,7 +4,7 @@ $root=Split-Path -Parent $PSScriptRoot
 $sourceRoot=if(Test-Path -LiteralPath (Join-Path $root 'upstream\port\xbox')){Join-Path $root 'upstream'}else{$root}
 if(-not $BuildDirectory){$BuildDirectory=Join-Path $sourceRoot 'build\xbox-uwp'}
 if(-not $OutputPath){$OutputPath=Join-Path $BuildDirectory 'OpenCE-Xbox-x64.appx'}
-$required=@('OpenCE UWP.exe','OpenCEUWP.winmd','SDL2.dll','libuwp.dll','opengl32.dll','libgallium_wgl.dll','dxil.dll','z-1.dll','halo_guest.elf')
+$required=@('OpenCE UWP.exe','OpenCEUWP.winmd','SDL2.dll','libuwp.dll','z-1.dll','halo_guest.elf')
 foreach($name in $required){if(-not(Test-Path -LiteralPath (Join-Path $BuildDirectory $name))){throw "Missing build output: $name"}}
 $assets=Join-Path $BuildDirectory 'xbox-assets'
 & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $sourceRoot 'tools\generate_xbox_assets.ps1') -OutputDirectory $assets

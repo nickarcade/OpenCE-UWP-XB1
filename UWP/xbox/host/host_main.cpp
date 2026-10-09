@@ -1,9 +1,11 @@
 #include "host.h"
 #include "xiso_installer.h"
+#include "d3d8_dx11.h"
 #include <SDL.h>
 #include <libuwp.h>
 #include <windows.h>
 #include <winrt/Windows.Storage.h>
+#include <winrt/Windows.UI.Core.h>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -351,16 +353,21 @@ extern "C" int SDL_main(int, char **)
         host_aveh_t add_veh = (host_aveh_t)GetProcAddress(kernel32, "AddVectoredExceptionHandler");
         if (add_veh) add_veh(1, (host_veh_handler_t)log_vectored_exception);
     }
-    SetUnhandledExceptionFilter(log_unhandled_exception);
-    _putenv("DXIL_DEBUG=verbose");
-    _putenv("MESA_DEBUG=1");
-    host_logf(HOST_LOG_INFO, "OpenCE UWP x64 host 1.5.7.6 starting");
+    host_logf(HOST_LOG_INFO, "OpenCE UWP x64 host starting (Native Direct3D 11 backend)");
     int physical_width = 1920, physical_height = 1080;
     uwp_SetScreenSize(physical_width, physical_height);
     host_sdl_set_backbuffer_size(physical_width, physical_height);
+    void *core_window = nullptr;
+    if (auto core = winrt::Windows::UI::Core::CoreWindow::GetForCurrentThread())
+        core_window = winrt::get_abi(core);
+    if (d3d8_dx11_initialize_uwp(core_window, physical_width, physical_height)) {
+        host_logf(HOST_LOG_INFO, "Direct3D 11 backend initialized successfully (%dx%d)", physical_width, physical_height);
+    } else {
+        host_logf(HOST_LOG_ERROR, "Direct3D 11 backend initialization failed");
+    }
     SDL_SetMainReady();
     host_logf(HOST_LOG_INFO, "UWP display initialized at %dx%d", physical_width, physical_height);
-    for (const wchar_t *library : { L"libuwp.dll", L"libgallium_wgl.dll", L"opengl32.dll" }) {
+    for (const wchar_t *library : { L"libuwp.dll" }) {
         SetLastError(ERROR_SUCCESS);
         HMODULE module = LoadPackagedLibrary(library, 0);
         host_logf(module ? HOST_LOG_INFO : HOST_LOG_ERROR,

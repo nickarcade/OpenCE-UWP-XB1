@@ -29,12 +29,13 @@ set(HOST_SOURCES
   "${REPO_ROOT}/build/xbox/host/host_import_table.c"
   "${REPO_ROOT}/port/windows/src/win32_files.c"
   "${REPO_ROOT}/port/windows/src/win32_net.c"
+  host/d3d8_dx11.cpp host/nv2a_hlsl.c
   "${GENERATED}/host_gl.c" "${GENERATED}/host_posix.c")
 
 set(IMGUI "${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui")
 list(APPEND HOST_SOURCES
   "${IMGUI}/imgui.cpp" "${IMGUI}/imgui_draw.cpp" "${IMGUI}/imgui_tables.cpp" "${IMGUI}/imgui_widgets.cpp"
-  "${IMGUI}/backends/imgui_impl_sdl2.cpp" "${IMGUI}/backends/imgui_impl_opengl3.cpp")
+  "${IMGUI}/backends/imgui_impl_sdl2.cpp" "${IMGUI}/backends/imgui_impl_dx11.cpp")
 
 set(WINRT_ENTRY "${CMAKE_CURRENT_BINARY_DIR}/winrt_main.obj")
 add_custom_command(OUTPUT "${WINRT_ENTRY}"
@@ -52,16 +53,17 @@ target_compile_options(OpenCEUWP PRIVATE $<$<COMPILE_LANGUAGE:C,CXX>:/W3>)
 target_include_directories(OpenCEUWP PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/host"
   "${REPO_ROOT}/port/android/include"
+  "${REPO_ROOT}/port/windows/src"
   "${REPO_ROOT}/port/linux/src"
   "${IMGUI}" "${IMGUI}/backends"
   "${UWP_DEPS}/x64/include" "${UWP_DEPS}/x64/include/SDL2")
 target_link_directories(OpenCEUWP BEFORE PRIVATE "$ENV{VCToolsInstallDir}/lib/x64/store")
-target_link_libraries(OpenCEUWP PRIVATE WindowsApp bcrypt ws2_32 iphlpapi
+target_link_libraries(OpenCEUWP PRIVATE WindowsApp d3d11 dxgi d3dcompiler bcrypt ws2_32 iphlpapi
   "${UWP_DEPS}/x64/lib/SDL2.lib" "${UWP_DEPS}/x64/lib/libuwp.lib")
 target_link_options(OpenCEUWP PRIVATE /APPCONTAINER /WINMD
   "/WINMDFILE:${CMAKE_CURRENT_BINARY_DIR}/OpenCEUWP.winmd")
 
-foreach(runtime SDL2.dll libuwp.dll opengl32.dll libgallium_wgl.dll dxil.dll z-1.dll)
+foreach(runtime SDL2.dll libuwp.dll z-1.dll)
   add_custom_command(TARGET OpenCEUWP POST_BUILD COMMAND "${CMAKE_COMMAND}" -E copy_if_different
     "${UWP_DEPS}/x64/bin/${runtime}" "$<TARGET_FILE_DIR:OpenCEUWP>/${runtime}")
 endforeach()
