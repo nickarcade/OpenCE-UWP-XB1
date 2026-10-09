@@ -208,6 +208,159 @@ def main():
             ]
             names.append((host_name, gl_name))
             continue
+        if gl_name == "glVertexAttribFormat":
+            lines += [
+                f"{ret} GUEST_ABI {host_name}({signature})",
+                "{",
+                "    d3d8_dx11_vertex_attrib_format((uint32_t)a0, (int)a1, (uint32_t)a2, (int)a3, (uint32_t)a4);",
+                "}", "",
+            ]
+            names.append((host_name, gl_name))
+            continue
+        if gl_name == "glVertexAttribIFormat":
+            lines += [
+                f"{ret} GUEST_ABI {host_name}({signature})",
+                "{",
+                "    d3d8_dx11_vertex_attrib_format((uint32_t)a0, (int)a1, (uint32_t)a2, 0, (uint32_t)a3);",
+                "}", "",
+            ]
+            names.append((host_name, gl_name))
+            continue
+        if gl_name == "glVertexAttribBinding":
+            lines += [
+                f"{ret} GUEST_ABI {host_name}({signature})",
+                "{",
+                "    d3d8_dx11_vertex_attrib_binding((uint32_t)a0, (uint32_t)a1);",
+                "}", "",
+            ]
+            names.append((host_name, gl_name))
+            continue
+        if gl_name == "glBindVertexBuffer":
+            lines += [
+                f"{ret} GUEST_ABI {host_name}({signature})",
+                "{",
+                "    d3d8_dx11_bind_vertex_buffer((uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (int)a3);",
+                "}", "",
+            ]
+            names.append((host_name, gl_name))
+            continue
+        if gl_name == "glBindTexture":
+            lines += [
+                f"{ret} GUEST_ABI {host_name}({signature})",
+                "{",
+                "    d3d8_dx11_bind_texture((uint32_t)a0, (uint32_t)a1);",
+                "}", "",
+            ]
+            names.append((host_name, gl_name))
+            continue
+        if gl_name == "glActiveTexture":
+            lines += [
+                f"{ret} GUEST_ABI {host_name}({signature})",
+                "{",
+                "    d3d8_dx11_active_texture((uint32_t)a0);",
+                "}", "",
+            ]
+            names.append((host_name, gl_name))
+            continue
+        if gl_name == "glBindTextures":
+            lines += [
+                f"{ret} GUEST_ABI {host_name}({signature})",
+                "{",
+                "    d3d8_dx11_bind_textures((uint32_t)a0, (int)a1, (const uint32_t *)a2);",
+                "}", "",
+            ]
+            names.append((host_name, gl_name))
+            continue
+        if gl_name == "glTexImage2D":
+            lines += [
+                f"{ret} GUEST_ABI {host_name}({signature})",
+                "{",
+                "    d3d8_dx11_tex_image_2d((uint32_t)a0, (int)a1, (int)a2, (int)a3, (int)a4, (int)a5, (uint32_t)a6, (uint32_t)a7, (const void *)a8);",
+                "}", "",
+            ]
+            names.append((host_name, gl_name))
+            continue
+        if gl_name == "glTexSubImage2D":
+            lines += [
+                f"{ret} GUEST_ABI {host_name}({signature})",
+                "{",
+                "    d3d8_dx11_tex_sub_image_2d((uint32_t)a0, (int)a1, (int)a2, (int)a3, (int)a4, (int)a5, (uint32_t)a6, (uint32_t)a7, (const void *)a8);",
+                "}", "",
+            ]
+            names.append((host_name, gl_name))
+            continue
+        if gl_name == "glDeleteTextures":
+            lines += [
+                f"{ret} GUEST_ABI {host_name}({signature})",
+                "{",
+                "    d3d8_dx11_delete_textures((int)a0, (const uint32_t *)a1);",
+                "}", "",
+            ]
+            names.append((host_name, gl_name))
+            continue
+        if gl_name == "glTexParameteri":
+            lines += [
+                f"{ret} GUEST_ABI {host_name}({signature})",
+                "{",
+                "    d3d8_dx11_tex_parameter_i((uint32_t)a0, (uint32_t)a1, (int)a2);",
+                "}", "",
+            ]
+            names.append((host_name, gl_name))
+            continue
+        if gl_name == "glEnable":
+            lines += [
+                f"{ret} GUEST_ABI {host_name}({signature})",
+                "{",
+                "    d3d8_dx11_enable((uint32_t)a0, 1);",
+                "}", "",
+            ]
+            names.append((host_name, gl_name))
+            continue
+        if gl_name == "glDisable":
+            lines += [
+                f"{ret} GUEST_ABI {host_name}({signature})",
+                "{",
+                "    d3d8_dx11_enable((uint32_t)a0, 0);",
+                "}", "",
+            ]
+            names.append((host_name, gl_name))
+            continue
+        if gl_name == "glBlendFunc":
+            lines += [
+                f"{ret} GUEST_ABI {host_name}({signature})",
+                "{",
+                "    d3d8_dx11_blend_func((uint32_t)a0, (uint32_t)a1);",
+                "}", "",
+            ]
+            names.append((host_name, gl_name))
+            continue
+        if gl_name == "glBlendFuncSeparate":
+            lines += [
+                f"{ret} GUEST_ABI {host_name}({signature})",
+                "{",
+                "    d3d8_dx11_blend_func_separate((uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3);",
+                "}", "",
+            ]
+            names.append((host_name, gl_name))
+            continue
+        if gl_name == "glFramebufferTexture2D":
+            lines += [
+                f"{ret} GUEST_ABI {host_name}({signature})",
+                "{",
+                "    d3d8_dx11_framebuffer_texture_2d((uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)a3, (int)a4);",
+                "}", "",
+            ]
+            names.append((host_name, gl_name))
+            continue
+        if gl_name == "glBlitFramebuffer":
+            lines += [
+                f"{ret} GUEST_ABI {host_name}({signature})",
+                "{",
+                "    d3d8_dx11_blit_framebuffer((int)a0, (int)a1, (int)a2, (int)a3, (int)a4, (int)a5, (int)a6, (int)a7, (uint32_t)a8, (uint32_t)a9);",
+                "}", "",
+            ]
+            names.append((host_name, gl_name))
+            continue
         if gl_name == "glDrawArrays":
             lines += [
                 f"{ret} GUEST_ABI {host_name}({signature})",

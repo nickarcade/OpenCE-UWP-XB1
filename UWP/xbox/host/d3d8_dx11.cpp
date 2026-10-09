@@ -29,16 +29,49 @@ using Microsoft::WRL::ComPtr;
 
 namespace {
 
+struct vertex_binding_slot {
+    uint32_t buffer = 0;
+    uint32_t offset = 0;
+    int stride = 0;
+};
+
 struct vertex_attribute {
     int size = 0;
     uint32_t type = 0;
     bool normalized = false;
     int stride = 0;
     uint32_t offset = 0;
+    uint32_t relative_offset = 0;
+    uint32_t binding = 0;
     bool enabled = false;
 };
 
 static vertex_attribute g_attribs[16];
+static vertex_binding_slot g_bindings[16];
+
+struct dx11_texture_entry {
+    ComPtr<ID3D11Texture2D> texture;
+    ComPtr<ID3D11ShaderResourceView> srv;
+    ComPtr<ID3D11RenderTargetView> rtv;
+    int width = 0;
+    int height = 0;
+    DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+};
+
+static std::unordered_map<uint32_t, dx11_texture_entry> g_textures;
+static uint32_t g_bound_textures[16] = {};
+static uint32_t g_active_texture_unit = 0;
+
+struct dx11_fbo_entry {
+    uint32_t color_tex_id = 0;
+    uint32_t depth_tex_id = 0;
+};
+static std::unordered_map<uint32_t, dx11_fbo_entry> g_fbos;
+static uint32_t g_current_read_fbo = 0;
+static uint32_t g_current_draw_fbo = 1; // Default to in-game render target
+
+static bool g_blend_enabled = true;
+static bool g_depth_enabled = false;
 
 struct vertex_constants_cb {
     float c[192][4];
@@ -51,8 +84,6 @@ struct vertex_constants_cb {
 
 constexpr size_t VB_SIZE = 16 * 1024 * 1024; // 16 MB fast GPU ring buffer
 constexpr size_t IB_SIZE = 4 * 1024 * 1024;  // 4 MB fast GPU index buffer
-
-static uint32_t g_current_draw_fbo = 1; // Default to in-game render target
 
 struct dx11_context {
     ComPtr<ID3D11Device> device;
@@ -69,13 +100,21 @@ struct dx11_context {
 
     ComPtr<ID3D11RasterizerState> raster_state_default;
     ComPtr<ID3D11BlendState> blend_state_default;
+    ComPtr<ID3D11BlendState> blend_state_disabled;
     ComPtr<ID3D11DepthStencilState> depth_state_default;
+    ComPtr<ID3D11DepthStencilState> depth_state_enabled;
     ComPtr<ID3D11SamplerState> sampler_linear_wrap;
     ComPtr<ID3D11SamplerState> sampler_point_clamp;
+
+    ComPtr<ID3D11ShaderResourceView> white_srv;
 
     ComPtr<ID3D11VertexShader> fallback_vs;
     ComPtr<ID3D11PixelShader> fallback_ps;
     ComPtr<ID3DBlob> vs_bytecode;
+
+    ComPtr<ID3D11VertexShader> blit_vs;
+    ComPtr<ID3D11PixelShader> blit_ps;
+
     std::unordered_map<uint64_t, ComPtr<ID3D11InputLayout>> input_layouts;
 
     D3D11_VIEWPORT current_viewport{};
@@ -139,12 +178,42 @@ static D3D_PRIMITIVE_TOPOLOGY gl_mode_to_d3d11_topology(uint32_t mode)
     }
 }
 
+static void d3d8_dx11_render_blit_triangle(ID3D11ShaderResourceView *src_srv)
+{
+    if (!g_dx11.context || !src_srv || !g_dx11.blit_vs || !g_dx11.blit_ps) return;
+    g_dx11.context->IASetInputLayout(nullptr);
+    g_dx11.context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    g_dx11.context->VSSetShader(g_dx11.blit_vs.Get(), nullptr, 0);
+    g_dx11.context->PSSetShader(g_dx11.blit_ps.Get(), nullptr, 0);
+    ID3D11ShaderResourceView *srvs[] = { src_srv };
+    g_dx11.context->PSSetShaderResources(0, 1, srvs);
+    ID3D11SamplerState *samps[] = { g_dx11.sampler_linear_wrap.Get() };
+    g_dx11.context->PSSetSamplers(0, 1, samps);
+    g_dx11.context->RSSetState(g_dx11.raster_state_default.Get());
+    g_dx11.context->OMSetBlendState(g_dx11.blend_state_disabled.Get(), nullptr, 0xFFFFFFFF);
+    g_dx11.context->OMSetDepthStencilState(g_dx11.depth_state_default.Get(), 0);
+    g_dx11.context->Draw(3, 0);
+
+    ID3D11ShaderResourceView *null_srvs[] = { nullptr };
+    g_dx11.context->PSSetShaderResources(0, 1, null_srvs);
+}
+
 static void d3d8_dx11_prepare_draw(D3D_PRIMITIVE_TOPOLOGY topology)
 {
     if (!g_dx11.context) return;
 
     // 1. Ensure Render Target is bound
-    ID3D11RenderTargetView *rtvs[] = { g_dx11.back_buffer_rtv.Get() };
+    ID3D11RenderTargetView *current_rtv = g_dx11.back_buffer_rtv.Get();
+    if (g_current_draw_fbo != 0) {
+        auto fbo_it = g_fbos.find(g_current_draw_fbo);
+        if (fbo_it != g_fbos.end() && fbo_it->second.color_tex_id != 0) {
+            auto tex_it = g_textures.find(fbo_it->second.color_tex_id);
+            if (tex_it != g_textures.end() && tex_it->second.rtv) {
+                current_rtv = tex_it->second.rtv.Get();
+            }
+        }
+    }
+    ID3D11RenderTargetView *rtvs[] = { current_rtv };
     g_dx11.context->OMSetRenderTargets(1, rtvs, g_dx11.depth_stencil_dsv.Get());
 
     // 2. Set Constant Buffer
@@ -161,22 +230,31 @@ static void d3d8_dx11_prepare_draw(D3D_PRIMITIVE_TOPOLOGY topology)
     UINT offsets[16] = {};
 
     for (UINT i = 0; i < 16; ++i) {
-        buffers[i] = g_dx11.dynamic_vb.Get();
         D3D11_INPUT_ELEMENT_DESC desc{};
         desc.SemanticName = "TEXCOORD";
         desc.SemanticIndex = i;
-        desc.InputSlot = i;
-        desc.AlignedByteOffset = 0;
         desc.InputSlotClass = D3D11_INPUT_PER_VERTEX_DATA;
         desc.InstanceDataStepRate = 0;
 
-        if (g_attribs[i].enabled && g_attribs[i].stride > 0) {
-            strides[i] = static_cast<UINT>(g_attribs[i].stride);
-            offsets[i] = static_cast<UINT>(g_attribs[i].offset < VB_SIZE ? g_attribs[i].offset : 0);
+        UINT slot = (g_attribs[i].binding < 16) ? g_attribs[i].binding : i;
+        desc.InputSlot = slot;
+
+        if (g_attribs[i].enabled) {
+            int stride = g_bindings[slot].stride > 0 ? g_bindings[slot].stride : g_attribs[i].stride;
+            uint32_t base_offset = g_bindings[slot].offset;
+            uint32_t rel_offset = (g_attribs[i].relative_offset > 0) ? g_attribs[i].relative_offset : g_attribs[i].offset;
+
+            strides[slot] = static_cast<UINT>(stride > 0 ? stride : 16);
+            offsets[slot] = static_cast<UINT>(base_offset < VB_SIZE ? base_offset : 0);
+            buffers[slot] = g_dx11.dynamic_vb.Get();
+
+            desc.AlignedByteOffset = static_cast<UINT>(rel_offset);
             desc.Format = get_dxgi_format(g_attribs[i].size, g_attribs[i].type, g_attribs[i].normalized);
         } else {
-            strides[i] = 16;
-            offsets[i] = 0;
+            strides[slot] = 16;
+            offsets[slot] = 0;
+            buffers[slot] = g_dx11.dynamic_vb.Get();
+            desc.AlignedByteOffset = 0;
             desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
         }
         elements.push_back(desc);
@@ -188,6 +266,8 @@ static void d3d8_dx11_prepare_draw(D3D_PRIMITIVE_TOPOLOGY topology)
         uint64_t hash = 0xCBF29CE484222325ULL;
         for (UINT i = 0; i < 16; ++i) {
             hash = (hash * 0x100000001B3ULL) ^ static_cast<uint64_t>(elements[i].Format);
+            hash = (hash * 0x100000001B3ULL) ^ static_cast<uint64_t>(elements[i].InputSlot);
+            hash = (hash * 0x100000001B3ULL) ^ static_cast<uint64_t>(elements[i].AlignedByteOffset);
         }
 
         auto it = g_dx11.input_layouts.find(hash);
@@ -209,13 +289,33 @@ static void d3d8_dx11_prepare_draw(D3D_PRIMITIVE_TOPOLOGY topology)
         }
     }
 
-    // 4. Set Shaders & Pipeline States
+    // 4. Set Shaders & Texture
     g_dx11.context->VSSetShader(g_dx11.fallback_vs.Get(), nullptr, 0);
     g_dx11.context->PSSetShader(g_dx11.fallback_ps.Get(), nullptr, 0);
+
+    ID3D11ShaderResourceView *srv = g_dx11.white_srv.Get();
+    uint32_t tex_id = g_bound_textures[0];
+    if (tex_id != 0) {
+        auto it = g_textures.find(tex_id);
+        if (it != g_textures.end() && it->second.srv) {
+            srv = it->second.srv.Get();
+        }
+    }
+    ID3D11ShaderResourceView *srvs[] = { srv };
+    g_dx11.context->PSSetShaderResources(0, 1, srvs);
+
+    ID3D11SamplerState *samplers[] = { g_dx11.sampler_linear_wrap.Get() };
+    g_dx11.context->PSSetSamplers(0, 1, samplers);
+
     g_dx11.context->IASetPrimitiveTopology(topology);
     g_dx11.context->RSSetState(g_dx11.raster_state_default.Get());
-    g_dx11.context->OMSetBlendState(g_dx11.blend_state_default.Get(), nullptr, 0xFFFFFFFF);
-    g_dx11.context->OMSetDepthStencilState(g_dx11.depth_state_default.Get(), 0);
+
+    g_dx11.context->OMSetBlendState(
+        g_blend_enabled ? g_dx11.blend_state_default.Get() : g_dx11.blend_state_disabled.Get(),
+        nullptr, 0xFFFFFFFF);
+
+    g_dx11.context->OMSetDepthStencilState(
+        g_depth_enabled ? g_dx11.depth_state_enabled.Get() : g_dx11.depth_state_default.Get(), 0);
 }
 
 } // namespace
@@ -346,7 +446,7 @@ bool d3d8_dx11_initialize_uwp(void *core_window, int width, int height)
     cb_desc.ByteWidth = 512; // Pixel shader uniforms
     g_dx11.device->CreateBuffer(&cb_desc, nullptr, g_dx11.ps_constants.GetAddressOf());
 
-    // Vertex / Index buffers (D3D11_USAGE_DEFAULT for fast subresource updates)
+    // Vertex / Index buffers
     D3D11_BUFFER_DESC vb_desc{};
     vb_desc.ByteWidth = static_cast<UINT>(VB_SIZE);
     vb_desc.Usage = D3D11_USAGE_DEFAULT;
@@ -380,12 +480,25 @@ bool d3d8_dx11_initialize_uwp(void *core_window, int width, int height)
     blend_desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
     g_dx11.device->CreateBlendState(&blend_desc, g_dx11.blend_state_default.GetAddressOf());
 
+    // Disabled Blend State
+    D3D11_BLEND_DESC blend_disabled_desc{};
+    blend_disabled_desc.RenderTarget[0].BlendEnable = FALSE;
+    blend_disabled_desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    g_dx11.device->CreateBlendState(&blend_disabled_desc, g_dx11.blend_state_disabled.GetAddressOf());
+
     // Default Depth Stencil State (disabled initially so UI & early geometry are visible)
     D3D11_DEPTH_STENCIL_DESC ds_state_desc{};
     ds_state_desc.DepthEnable = FALSE;
     ds_state_desc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
     ds_state_desc.DepthFunc = D3D11_COMPARISON_ALWAYS;
     g_dx11.device->CreateDepthStencilState(&ds_state_desc, g_dx11.depth_state_default.GetAddressOf());
+
+    // Enabled Depth Stencil State
+    D3D11_DEPTH_STENCIL_DESC ds_enabled_desc{};
+    ds_enabled_desc.DepthEnable = TRUE;
+    ds_enabled_desc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+    ds_enabled_desc.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
+    g_dx11.device->CreateDepthStencilState(&ds_enabled_desc, g_dx11.depth_state_enabled.GetAddressOf());
 
     // Samplers
     D3D11_SAMPLER_DESC samp_desc{};
@@ -400,6 +513,25 @@ bool d3d8_dx11_initialize_uwp(void *core_window, int width, int height)
     samp_desc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
     samp_desc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
     g_dx11.device->CreateSamplerState(&samp_desc, g_dx11.sampler_point_clamp.GetAddressOf());
+
+    // 1x1 White dummy texture
+    D3D11_TEXTURE2D_DESC white_desc{};
+    white_desc.Width = 1;
+    white_desc.Height = 1;
+    white_desc.MipLevels = 1;
+    white_desc.ArraySize = 1;
+    white_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    white_desc.SampleDesc.Count = 1;
+    white_desc.Usage = D3D11_USAGE_IMMUTABLE;
+    white_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    uint32_t white_pixel = 0xFFFFFFFF;
+    D3D11_SUBRESOURCE_DATA white_init{};
+    white_init.pSysMem = &white_pixel;
+    white_init.SysMemPitch = 4;
+    ComPtr<ID3D11Texture2D> white_tex;
+    if (SUCCEEDED(g_dx11.device->CreateTexture2D(&white_desc, &white_init, white_tex.GetAddressOf()))) {
+        g_dx11.device->CreateShaderResourceView(white_tex.Get(), nullptr, g_dx11.white_srv.GetAddressOf());
+    }
 
     // Compile fallback vertex & pixel shaders
     static const char s_fallback_hlsl[] =
@@ -462,22 +594,59 @@ bool d3d8_dx11_initialize_uwp(void *core_window, int width, int height)
         "    output.uv = input.v8.xy;\n"
         "    return output;\n"
         "}\n"
+        "Texture2D t0 : register(t0);\n"
+        "SamplerState s0 : register(s0);\n"
         "float4 PSMain(PS_INPUT input) : SV_Target\n"
         "{\n"
-        "    return input.col;\n"
+        "    float4 tex = t0.Sample(s0, input.uv);\n"
+        "    return input.col * tex;\n"
         "}\n";
 
-    ComPtr<ID3DBlob> vs_blob, ps_blob, error_blob;
+    ComPtr<ID3DBlob> vs_blob, ps_blob;
     hr = D3DCompile(s_fallback_hlsl, sizeof(s_fallback_hlsl) - 1, "fallback.hlsl", nullptr, nullptr,
-        "VSMain", "vs_5_0", 0, 0, vs_blob.GetAddressOf(), error_blob.GetAddressOf());
+        "VSMain", "vs_5_0", 0, 0, vs_blob.GetAddressOf(), nullptr);
     if (SUCCEEDED(hr)) {
         g_dx11.vs_bytecode = vs_blob;
         g_dx11.device->CreateVertexShader(vs_blob->GetBufferPointer(), vs_blob->GetBufferSize(), nullptr, g_dx11.fallback_vs.GetAddressOf());
     }
     hr = D3DCompile(s_fallback_hlsl, sizeof(s_fallback_hlsl) - 1, "fallback.hlsl", nullptr, nullptr,
-        "PSMain", "ps_5_0", 0, 0, ps_blob.GetAddressOf(), error_blob.GetAddressOf());
+        "PSMain", "ps_5_0", 0, 0, ps_blob.GetAddressOf(), nullptr);
     if (SUCCEEDED(hr)) {
         g_dx11.device->CreatePixelShader(ps_blob->GetBufferPointer(), ps_blob->GetBufferSize(), nullptr, g_dx11.fallback_ps.GetAddressOf());
+    }
+
+    // Compile blit shaders
+    static const char s_blit_hlsl[] =
+        "struct BLIT_VS_OUT\n"
+        "{\n"
+        "    float4 pos : SV_Position;\n"
+        "    float2 uv  : TEXCOORD0;\n"
+        "};\n"
+        "BLIT_VS_OUT BlitVS(uint id : SV_VertexID)\n"
+        "{\n"
+        "    BLIT_VS_OUT o;\n"
+        "    float2 coord = float2((id == 2) ? 3.0f : -1.0f, (id == 1) ? 3.0f : -1.0f);\n"
+        "    o.pos = float4(coord, 0.0f, 1.0f);\n"
+        "    o.uv = float2((coord.x + 1.0f) * 0.5f, (1.0f - coord.y) * 0.5f);\n"
+        "    return o;\n"
+        "}\n"
+        "Texture2D blit_tex : register(t0);\n"
+        "SamplerState blit_samp : register(s0);\n"
+        "float4 BlitPS(BLIT_VS_OUT input) : SV_Target\n"
+        "{\n"
+        "    return blit_tex.Sample(blit_samp, input.uv);\n"
+        "}\n";
+
+    ComPtr<ID3DBlob> blit_vs_blob, blit_ps_blob;
+    hr = D3DCompile(s_blit_hlsl, sizeof(s_blit_hlsl) - 1, "blit.hlsl", nullptr, nullptr,
+        "BlitVS", "vs_5_0", 0, 0, blit_vs_blob.GetAddressOf(), nullptr);
+    if (SUCCEEDED(hr)) {
+        g_dx11.device->CreateVertexShader(blit_vs_blob->GetBufferPointer(), blit_vs_blob->GetBufferSize(), nullptr, g_dx11.blit_vs.GetAddressOf());
+    }
+    hr = D3DCompile(s_blit_hlsl, sizeof(s_blit_hlsl) - 1, "blit.hlsl", nullptr, nullptr,
+        "BlitPS", "ps_5_0", 0, 0, blit_ps_blob.GetAddressOf(), nullptr);
+    if (SUCCEEDED(hr)) {
+        g_dx11.device->CreatePixelShader(blit_ps_blob->GetBufferPointer(), blit_ps_blob->GetBufferSize(), nullptr, g_dx11.blit_ps.GetAddressOf());
     }
 
     // Set initial viewport
@@ -489,6 +658,8 @@ bool d3d8_dx11_initialize_uwp(void *core_window, int width, int height)
 
 void d3d8_dx11_shutdown(void)
 {
+    g_textures.clear();
+    g_fbos.clear();
     g_dx11 = dx11_context{};
 }
 
@@ -561,35 +732,91 @@ void d3d8_dx11_bind_framebuffer(uint32_t target, uint32_t fbo)
     if (target == 0x8CA9 /* GL_DRAW_FRAMEBUFFER */ || target == 0x8D40 /* GL_FRAMEBUFFER */) {
         g_current_draw_fbo = fbo;
     }
+    if (target == 0x8CA8 /* GL_READ_FRAMEBUFFER */ || target == 0x8D40 /* GL_FRAMEBUFFER */) {
+        g_current_read_fbo = fbo;
+    }
+}
+
+void d3d8_dx11_framebuffer_texture_2d(uint32_t target, uint32_t attachment, uint32_t textarget, uint32_t texture, int level)
+{
+    (void)target; (void)textarget; (void)level;
+    uint32_t fbo = g_current_draw_fbo;
+    if (attachment == 0x8CE0 /* GL_COLOR_ATTACHMENT0 */) {
+        g_fbos[fbo].color_tex_id = texture;
+    } else if (attachment == 0x8D00 /* GL_DEPTH_ATTACHMENT */ || attachment == 0x821A /* GL_DEPTH_STENCIL_ATTACHMENT */) {
+        g_fbos[fbo].depth_tex_id = texture;
+    }
+}
+
+void d3d8_dx11_blit_framebuffer(int srcX0, int srcY0, int srcX1, int srcY1, int dstX0, int dstY0, int dstX1, int dstY1, uint32_t mask, uint32_t filter)
+{
+    (void)srcX0; (void)srcY0; (void)srcX1; (void)srcY1; (void)filter;
+    if (!g_dx11.context || !(mask & 0x00004000 /* GL_COLOR_BUFFER_BIT */)) return;
+
+    ID3D11ShaderResourceView *src_srv = nullptr;
+    auto fbo_it = g_fbos.find(g_current_read_fbo);
+    if (fbo_it != g_fbos.end() && fbo_it->second.color_tex_id != 0) {
+        auto tex_it = g_textures.find(fbo_it->second.color_tex_id);
+        if (tex_it != g_textures.end() && tex_it->second.srv) {
+            src_srv = tex_it->second.srv.Get();
+        }
+    }
+
+    if (!src_srv) return;
+
+    if (g_current_draw_fbo == 0 && g_dx11.back_buffer_rtv) {
+        ID3D11RenderTargetView *rtvs[] = { g_dx11.back_buffer_rtv.Get() };
+        g_dx11.context->OMSetRenderTargets(1, rtvs, nullptr);
+
+        D3D11_VIEWPORT vp{};
+        vp.TopLeftX = static_cast<float>(dstX0 < dstX1 ? dstX0 : dstX1);
+        vp.TopLeftY = static_cast<float>(dstY0 < dstY1 ? dstY0 : dstY1);
+        vp.Width = static_cast<float>(abs(dstX1 - dstX0));
+        vp.Height = static_cast<float>(abs(dstY1 - dstY0));
+        if (vp.Width <= 0.0f) vp.Width = static_cast<float>(g_dx11.width);
+        if (vp.Height <= 0.0f) vp.Height = static_cast<float>(g_dx11.height);
+        vp.MinDepth = 0.0f;
+        vp.MaxDepth = 1.0f;
+        g_dx11.context->RSSetViewports(1, &vp);
+
+        d3d8_dx11_render_blit_triangle(src_srv);
+    }
 }
 
 void d3d8_dx11_clear(DWORD flags, DWORD color, float z, DWORD stencil)
 {
     if (!g_dx11.context) return;
 
-    if (flags & 0x00000001) { // D3DCLEAR_TARGET
-        // If FBO 0 is bound, this is the desktop letterbox clear right before present.
-        // Ignore it so the rendered game frame is NOT erased!
+    if ((flags & 0x00000001) || (flags & 0x00004000 /* GL_COLOR_BUFFER_BIT */)) {
+        ID3D11RenderTargetView *target_rtv = g_dx11.back_buffer_rtv.Get();
         if (g_current_draw_fbo != 0) {
-            float clear_color[4];
-            if (color != 0) {
-                clear_color[0] = ((color >> 16) & 0xff) / 255.0f;
-                clear_color[1] = ((color >> 8) & 0xff) / 255.0f;
-                clear_color[2] = (color & 0xff) / 255.0f;
-                clear_color[3] = ((color >> 24) & 0xff) / 255.0f;
-            } else {
-                memcpy(clear_color, g_dx11.clear_color, sizeof(clear_color));
+            auto fbo_it = g_fbos.find(g_current_draw_fbo);
+            if (fbo_it != g_fbos.end() && fbo_it->second.color_tex_id != 0) {
+                auto tex_it = g_textures.find(fbo_it->second.color_tex_id);
+                if (tex_it != g_textures.end() && tex_it->second.rtv) {
+                    target_rtv = tex_it->second.rtv.Get();
+                }
             }
-            if (g_dx11.back_buffer_rtv)
-                g_dx11.context->ClearRenderTargetView(g_dx11.back_buffer_rtv.Get(), clear_color);
+        }
+        float clear_color[4];
+        if (color != 0) {
+            clear_color[0] = ((color >> 16) & 0xff) / 255.0f;
+            clear_color[1] = ((color >> 8) & 0xff) / 255.0f;
+            clear_color[2] = (color & 0xff) / 255.0f;
+            clear_color[3] = ((color >> 24) & 0xff) / 255.0f;
+        } else {
+            memcpy(clear_color, g_dx11.clear_color, sizeof(clear_color));
+        }
+        if (target_rtv) {
+            g_dx11.context->ClearRenderTargetView(target_rtv, clear_color);
         }
     }
 
     UINT ds_flags = 0;
-    if (flags & 0x00000002) ds_flags |= D3D11_CLEAR_DEPTH;   // D3DCLEAR_ZBUFFER
-    if (flags & 0x00000004) ds_flags |= D3D11_CLEAR_STENCIL; // D3DCLEAR_STENCIL
+    if ((flags & 0x00000002) || (flags & 0x00000100 /* GL_DEPTH_BUFFER_BIT */)) ds_flags |= D3D11_CLEAR_DEPTH;
+    if ((flags & 0x00000004) || (flags & 0x00000400 /* GL_STENCIL_BUFFER_BIT */)) ds_flags |= D3D11_CLEAR_STENCIL;
 
-    if (ds_flags && g_dx11.depth_stencil_dsv && g_current_draw_fbo != 0) {
+    if (ds_flags && g_dx11.depth_stencil_dsv) {
         g_dx11.context->ClearDepthStencilView(g_dx11.depth_stencil_dsv.Get(), ds_flags, z, static_cast<UINT8>(stencil));
     }
 }
@@ -651,8 +878,193 @@ void d3d8_dx11_vertex_attrib_pointer(uint32_t index, int size, uint32_t type, in
         g_attribs[index].normalized = (normalized != 0);
         g_attribs[index].stride = stride;
         g_attribs[index].offset = offset;
+        g_attribs[index].relative_offset = offset;
+        g_attribs[index].binding = index;
         g_attribs[index].enabled = true;
     }
+}
+
+void d3d8_dx11_vertex_attrib_format(uint32_t attribindex, int size, uint32_t type, int normalized, uint32_t relativeoffset)
+{
+    if (attribindex < 16) {
+        g_attribs[attribindex].size = size;
+        g_attribs[attribindex].type = type;
+        g_attribs[attribindex].normalized = (normalized != 0);
+        g_attribs[attribindex].relative_offset = relativeoffset;
+        g_attribs[attribindex].enabled = true;
+    }
+}
+
+void d3d8_dx11_vertex_attrib_binding(uint32_t attribindex, uint32_t bindingindex)
+{
+    if (attribindex < 16 && bindingindex < 16) {
+        g_attribs[attribindex].binding = bindingindex;
+    }
+}
+
+void d3d8_dx11_bind_vertex_buffer(uint32_t bindingindex, uint32_t buffer, uint32_t offset, int stride)
+{
+    if (bindingindex < 16) {
+        g_bindings[bindingindex].buffer = buffer;
+        g_bindings[bindingindex].offset = offset;
+        g_bindings[bindingindex].stride = stride;
+    }
+}
+
+void d3d8_dx11_bind_texture(uint32_t target, uint32_t texture)
+{
+    (void)target;
+    if (g_active_texture_unit < 16) {
+        g_bound_textures[g_active_texture_unit] = texture;
+    }
+}
+
+void d3d8_dx11_active_texture(uint32_t texture)
+{
+    if (texture >= 0x84C0 && texture < 0x84D0) {
+        g_active_texture_unit = texture - 0x84C0;
+    } else if (texture < 16) {
+        g_active_texture_unit = texture;
+    }
+}
+
+void d3d8_dx11_bind_textures(uint32_t first, int count, const uint32_t *textures)
+{
+    if (textures && count > 0) {
+        for (int i = 0; i < count; ++i) {
+            if (first + i < 16) {
+                g_bound_textures[first + i] = textures[i];
+            }
+        }
+    }
+}
+
+void d3d8_dx11_tex_image_2d(uint32_t target, int level, int internalformat, int width, int height, int border, uint32_t format, uint32_t type, const void *pixels)
+{
+    (void)target; (void)internalformat; (void)border; (void)type;
+    if (!g_dx11.device || width <= 0 || height <= 0) return;
+
+    uint32_t current_id = (g_active_texture_unit < 16) ? g_bound_textures[g_active_texture_unit] : 0;
+    if (current_id == 0) return;
+
+    DXGI_FORMAT dxgi_format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    if (format == 0x1908) { // GL_RGBA
+        dxgi_format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    } else if (format == 0x80E1) { // GL_BGRA
+        dxgi_format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    } else if (format == 0x8370 /* GL_COMPRESSED_RGB_S3TC_DXT1_EXT */) {
+        dxgi_format = DXGI_FORMAT_BC1_UNORM;
+    }
+
+    if (level == 0) {
+        D3D11_TEXTURE2D_DESC desc{};
+        desc.Width = static_cast<UINT>(width);
+        desc.Height = static_cast<UINT>(height);
+        desc.MipLevels = 1;
+        desc.ArraySize = 1;
+        desc.Format = dxgi_format;
+        desc.SampleDesc.Count = 1;
+        desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+        desc.CPUAccessFlags = 0;
+
+        D3D11_SUBRESOURCE_DATA subdata{};
+        subdata.pSysMem = pixels;
+        subdata.SysMemPitch = static_cast<UINT>(width * 4);
+
+        ComPtr<ID3D11Texture2D> tex;
+        HRESULT hr = g_dx11.device->CreateTexture2D(&desc, pixels ? &subdata : nullptr, tex.GetAddressOf());
+        if (FAILED(hr)) {
+            desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            hr = g_dx11.device->CreateTexture2D(&desc, pixels ? &subdata : nullptr, tex.GetAddressOf());
+        }
+        if (SUCCEEDED(hr)) {
+            ComPtr<ID3D11ShaderResourceView> srv;
+            g_dx11.device->CreateShaderResourceView(tex.Get(), nullptr, srv.GetAddressOf());
+
+            ComPtr<ID3D11RenderTargetView> rtv;
+            if (desc.BindFlags & D3D11_BIND_RENDER_TARGET) {
+                g_dx11.device->CreateRenderTargetView(tex.Get(), nullptr, rtv.GetAddressOf());
+            }
+
+            dx11_texture_entry entry;
+            entry.texture = tex;
+            entry.srv = srv;
+            entry.rtv = rtv;
+            entry.width = width;
+            entry.height = height;
+            entry.format = dxgi_format;
+            g_textures[current_id] = entry;
+        }
+    } else {
+        auto it = g_textures.find(current_id);
+        if (it != g_textures.end() && it->second.texture && pixels) {
+            D3D11_BOX box{};
+            box.left = 0; box.right = width;
+            box.top = 0; box.bottom = height;
+            box.front = 0; box.back = 1;
+            g_dx11.context->UpdateSubresource(it->second.texture.Get(), level, &box, pixels, width * 4, 0);
+        }
+    }
+}
+
+void d3d8_dx11_tex_sub_image_2d(uint32_t target, int level, int xoffset, int yoffset, int width, int height, uint32_t format, uint32_t type, const void *pixels)
+{
+    (void)target; (void)format; (void)type;
+    if (!g_dx11.context || !pixels || width <= 0 || height <= 0) return;
+
+    uint32_t current_id = (g_active_texture_unit < 16) ? g_bound_textures[g_active_texture_unit] : 0;
+    if (current_id == 0) return;
+
+    auto it = g_textures.find(current_id);
+    if (it != g_textures.end() && it->second.texture) {
+        D3D11_BOX box{};
+        box.left = static_cast<UINT>(xoffset);
+        box.right = static_cast<UINT>(xoffset + width);
+        box.top = static_cast<UINT>(yoffset);
+        box.bottom = static_cast<UINT>(yoffset + height);
+        box.front = 0;
+        box.back = 1;
+        g_dx11.context->UpdateSubresource(it->second.texture.Get(), level, &box, pixels, static_cast<UINT>(width * 4), 0);
+    }
+}
+
+void d3d8_dx11_delete_textures(int n, const uint32_t *textures)
+{
+    if (textures && n > 0) {
+        for (int i = 0; i < n; ++i) {
+            g_textures.erase(textures[i]);
+            for (int stage = 0; stage < 16; ++stage) {
+                if (g_bound_textures[stage] == textures[i]) {
+                    g_bound_textures[stage] = 0;
+                }
+            }
+        }
+    }
+}
+
+void d3d8_dx11_tex_parameter_i(uint32_t target, uint32_t pname, int param)
+{
+    (void)target; (void)pname; (void)param;
+}
+
+void d3d8_dx11_enable(uint32_t cap, int enable)
+{
+    if (cap == 0x0BE2 /* GL_BLEND */) {
+        g_blend_enabled = (enable != 0);
+    } else if (cap == 0x0B71 /* GL_DEPTH_TEST */) {
+        g_depth_enabled = (enable != 0);
+    }
+}
+
+void d3d8_dx11_blend_func(uint32_t sfactor, uint32_t dfactor)
+{
+    (void)sfactor; (void)dfactor;
+}
+
+void d3d8_dx11_blend_func_separate(uint32_t srcRGB, uint32_t dstRGB, uint32_t srcAlpha, uint32_t dstAlpha)
+{
+    (void)srcRGB; (void)dstRGB; (void)srcAlpha; (void)dstAlpha;
 }
 
 void d3d8_dx11_draw_arrays(uint32_t mode, uint32_t first, uint32_t count)
