@@ -55,7 +55,13 @@ def split_parameter(param: str):
 
 
 def main():
-    gl_header, gl32, gl2ext, output, imports = sys.argv[1:6]
+    arguments = sys.argv[1:]
+    arch = "aarch64"
+    if arguments and arguments[0] == "--arch":
+        arch = arguments[1]
+        arguments = arguments[2:]
+    gl_header, gl32, gl2ext, output, imports = arguments[:5]
+    integer_register_count = 6 if arch in ("x86_64", "x32") else INTEGER_REGISTER_COUNT
     functions = android_functions(gl_header)
     protos = prototypes(gl32, gl2ext)
     out = [
@@ -130,7 +136,7 @@ def main():
                 call_args.append(arg)
                 continue
             wide = base in WIDE_TYPES and not is_pointer
-            on_stack = integer_index >= INTEGER_REGISTER_COUNT
+            on_stack = integer_index >= integer_register_count
             integer_index += 1
             if is_pointer:
                 if on_stack:

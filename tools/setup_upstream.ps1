@@ -29,7 +29,7 @@ New-Item -ItemType Directory -Path $portDestination -Force | Out-Null
 Copy-Item -Path (Join-Path $root 'UWP\xbox\*') -Destination $portDestination -Recurse -Force
 
 $toolNames = @(
-    'generate_xbox_assets.ps1', 'musl_headers.py', 'package_xbox.ps1',
+    'android_gl_stubs.py', 'generate_xbox_assets.ps1', 'musl_headers.py', 'package_xbox.ps1',
     'sign_xbox.ps1', 'xbox_build.py',
     'xbox_host_gl.py', 'xbox_host_posix.py'
 )

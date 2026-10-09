@@ -199,6 +199,28 @@ extern "C" int GUEST_ABI host_decompress_map(const char *source_path,
     return 1;
 }
 
+static LONG WINAPI log_vectored_exception(EXCEPTION_POINTERS *details)
+{
+    if (details && details->ExceptionRecord && details->ContextRecord) {
+        DWORD code = details->ExceptionRecord->ExceptionCode;
+        if (code == EXCEPTION_ACCESS_VIOLATION ||
+            code == EXCEPTION_ILLEGAL_INSTRUCTION ||
+            code == EXCEPTION_INT_DIVIDE_BY_ZERO ||
+            code == EXCEPTION_STACK_OVERFLOW ||
+            code == 0xC0000008 /* STATUS_INVALID_HANDLE */) {
+            const EXCEPTION_RECORD *record = details->ExceptionRecord;
+            const CONTEXT *context = details->ContextRecord;
+            host_logf(HOST_LOG_ERROR,
+                "FATAL EXCEPTION code=%08lx address=%p rip=%016llx rsp=%016llx "
+                "rax=%016llx rbx=%016llx rcx=%016llx rdx=%016llx rsi=%016llx rdi=%016llx",
+                record->ExceptionCode, record->ExceptionAddress,
+                context->Rip, context->Rsp, context->Rax, context->Rbx,
+                context->Rcx, context->Rdx, context->Rsi, context->Rdi);
+        }
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 static LONG WINAPI log_unhandled_exception(EXCEPTION_POINTERS *details)
 {
     if (details && details->ExceptionRecord && details->ContextRecord) {
@@ -293,6 +315,7 @@ extern "C" int SDL_main(int, char **)
     std::filesystem::path local(local_w.c_str());
     std::filesystem::path internal = local / L"OpenCE";
     open_log_at(internal);
+    AddVectoredExceptionHandler(1, log_vectored_exception);
     SetUnhandledExceptionFilter(log_unhandled_exception);
     host_logf(HOST_LOG_INFO, "OpenCE UWP x64 host 1.4.8.0 starting");
     int physical_width = 1920, physical_height = 1080;

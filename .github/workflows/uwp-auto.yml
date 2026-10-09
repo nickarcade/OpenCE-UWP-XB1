@@ -1,6 +1,7 @@
 name: UWP Auto
 
 on:
+  workflow_dispatch:
   workflow_call:
     inputs:
       publish:
@@ -245,4 +246,5 @@ jobs:
             --target UWP-Auto `
             --prerelease `
             --title 'OpenCE UWP ${{ steps.release.outputs.version }}' `
-            --notes "Built from OpenCE ${{ steps.release.outputs.tag }} (${{ steps.release.outputs.commit }}) with a $signing signing certificate."
+            --notes "Built from OpenCE ${{ steps.release.outputs.tag }} (${{ steps.release.outputs.commit }}) with a $signing signing certificate." `
+            --clobber

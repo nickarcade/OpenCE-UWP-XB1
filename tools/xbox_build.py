@@ -107,7 +107,7 @@ def generate_xbox_build(n: Writer, sln: Any) -> None:
     guest_gl_c = gen_dir / "guest_gl.c"
     gl_imports = gen_dir / "gl_imports.list"
     n.rule("xbox_gl_stubs",
-           command=(f"{python} tools/android_gl_stubs.py {LINUX_DIR}/src/gl.h "
+           command=(f"{python} tools/android_gl_stubs.py --arch x86_64 {LINUX_DIR}/src/gl.h "
                     f"{gles}/GLES3/gl32.h {gles}/GLES2/gl2ext.h $out_c $out_list"),
            description="XBOX GL STUBS")
     n.build(outputs=[guest_gl_c, gl_imports], rule="xbox_gl_stubs",

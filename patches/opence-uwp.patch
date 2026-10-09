@@ -261,7 +261,7 @@ index b3343d34..bf415c9d 100644
  	glDrawBuffers(1, &draw_buffer);
 -	if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
 -		platform_log("framebuffer %u/%u%s is incomplete", color, depth, renderbuffers ? " (multisampled)" : "");
-+	glReadBuffer(draw_buffer);
++	if (draw_buffer != GL_NONE) glReadBuffer(draw_buffer);
 +	status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
 +	if (status != GL_FRAMEBUFFER_COMPLETE)
 +	{

@@ -1,0 +1,149 @@
+name: Build OpenCE UWP
+
+on:
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: "OpenCE Git Revision"
+        required: true
+        default: "6d840473da6d0975e36a997858b597563811d785"
+      version:
+        description: "Release Version"
+        required: true
+        default: "1.5.7.1"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      UWP_DEPS_REPOSITORY: https://github.com/worleydl/uwp-dep.git
+      UWP_DEPS_COMMIT: 3960693ee292522a5bcb58bc7d4136a0bb8864af
+      GL_HEADERS_REPOSITORY: https://github.com/KhronosGroup/OpenGL-Registry.git
+      GL_HEADERS_COMMIT: 6af574a14089ccfee87efe230ebcdd8742859813
+      EGL_HEADERS_REPOSITORY: https://github.com/KhronosGroup/EGL-Registry.git
+      EGL_HEADERS_COMMIT: db3425b8246136faccb5e2782b5694960bd6edf1
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: UWP-Auto
+
+      - name: Verify toolchain
+        shell: pwsh
+        run: |
+          py -3 --version
+          ninja --version
+          cmake --version
+          clang --version
+          clang-cl --version
+
+      - name: Install LLVM 19.1.3
+        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0
+        with:
+          version: "19.1.3"
+          directory: ${{ runner.temp }}/llvm-19.1.3
+
+      - name: Verify pinned compiler
+        shell: pwsh
+        run: |
+          clang --version
+          clang-cl --version
+          if ((clang --version | Select-Object -First 1) -notmatch 'clang version 19\.1\.3') {
+              throw 'LLVM 19.1.3 is not first on PATH.'
+          }
+
+      - name: Fetch UWP dependencies
+        shell: pwsh
+        run: |
+          git clone --filter=blob:none --branch pd $env:UWP_DEPS_REPOSITORY uwp-deps
+          git -C uwp-deps checkout --detach $env:UWP_DEPS_COMMIT
+          if ((git -C uwp-deps rev-parse HEAD) -ne $env:UWP_DEPS_COMMIT) {
+              throw 'Unexpected UWP dependency revision.'
+          }
+
+      - name: Fetch GLES headers
+        shell: pwsh
+        run: |
+          git clone --filter=blob:none --no-checkout $env:GL_HEADERS_REPOSITORY gl-headers
+          git -C gl-headers sparse-checkout set api/GLES2 api/GLES3
+          git -C gl-headers checkout --detach $env:GL_HEADERS_COMMIT
+          if ((git -C gl-headers rev-parse HEAD) -ne $env:GL_HEADERS_COMMIT) {
+              throw 'Unexpected OpenGL header revision.'
+          }
+          git clone --filter=blob:none --no-checkout $env:EGL_HEADERS_REPOSITORY egl-headers
+          git -C egl-headers sparse-checkout set api/KHR
+          git -C egl-headers checkout --detach $env:EGL_HEADERS_COMMIT
+          if ((git -C egl-headers rev-parse HEAD) -ne $env:EGL_HEADERS_COMMIT) {
+              throw 'Unexpected EGL header revision.'
+          }
+          Copy-Item -Recurse egl-headers\api\KHR gl-headers\api\KHR
+
+      - name: Prepare OpenCE source
+        shell: pwsh
+        run: |
+          .\tools\setup_upstream.ps1 -Revision '${{ inputs.revision }}'
+          $utf8 = [Text.UTF8Encoding]::new($false)
+          $manifestPath = 'upstream\port\xbox\Package.appxmanifest'
+          $manifest = Get-Content $manifestPath -Raw
+          $manifest = $manifest -replace 'Version="\d+\.\d+\.\d+\.\d+"', 'Version="${{ inputs.version }}"'
+          [IO.File]::WriteAllText($manifestPath, $manifest, $utf8)
+          $hostPath = 'upstream\port\xbox\host\host_main.cpp'
+          $hostSource = Get-Content $hostPath -Raw
+          $hostSource = $hostSource -replace 'OpenCE UWP x64 host \d+\.\d+\.\d+\.\d+ starting', 'OpenCE UWP x64 host ${{ inputs.version }} starting'
+          [IO.File]::WriteAllText($hostPath, $hostSource, $utf8)
+
+      - name: Build UWP
+        id: uwp_build
+        shell: pwsh
+        env:
+          HALO_XBOX_GLES_INCLUDE: ${{ github.workspace }}\gl-headers\api
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'uwp-build.log'
+          $ErrorActionPreference = 'Continue'
+          & pwsh -NoProfile -File .\tools\build.ps1 `
+              -UwpDeps "$env:GITHUB_WORKSPACE\uwp-deps" -Jobs 4 2>&1 |
+              Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) { throw 'UWP build failed.' }
+
+      - name: Package UWP
+        shell: pwsh
+        run: |
+          $output = "dist\OpenCE-UWP-${{ inputs.version }}"
+          .\tools\make_release.ps1 -OutputDirectory $output
+          $archive = "$output.zip"
+          Compress-Archive -Path "$output\*" -DestinationPath $archive -CompressionLevel Optimal
+          $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash
+          "$hash  $([IO.Path]::GetFileName($archive))" | Set-Content "$archive.sha256" -Encoding Ascii
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenCE-UWP-${{ inputs.version }}
+          path: |
+            dist/OpenCE-UWP-${{ inputs.version }}/OpenCE-UWP-x64.appx
+            dist/OpenCE-UWP-${{ inputs.version }}/OpenCE-UWP.cer
+            dist/OpenCE-UWP-${{ inputs.version }}/Dependencies/x64/*.appx
+            dist/OpenCE-UWP-${{ inputs.version }}.zip
+            dist/OpenCE-UWP-${{ inputs.version }}.zip.sha256
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Publish Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $output = 'dist\OpenCE-UWP-${{ inputs.version }}'
+          $package = "$output\OpenCE-UWP-x64.appx"
+          $certificate = "$output\OpenCE-UWP.cer"
+          $archive = 'dist\OpenCE-UWP-${{ inputs.version }}.zip'
+          & gh release create 'v${{ inputs.version }}' `
+            $package $certificate $archive "$archive.sha256" `
+            --repo $env:GITHUB_REPOSITORY `
+            --target UWP-Auto `
+            --title 'OpenCE UWP ${{ inputs.version }}' `
+            --notes "Built OpenCE UWP for Xbox One from revision ${{ inputs.revision }}." `
+            --clobber
