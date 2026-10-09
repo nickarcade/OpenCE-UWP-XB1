@@ -237,6 +237,12 @@ static LONG WINAPI log_vectored_exception(EXCEPTION_POINTERS *details)
                         context->Rip = fault_addr + 0x19;
                         return EXCEPTION_CONTINUE_EXECUTION;
                     }
+                    if (fault_addr == base + 0x57f68a) {
+                        host_logf(HOST_LOG_WARN,
+                            "recovered from libgallium_wgl NULL shader dereference at RVA 0x57f68a; advancing Rip");
+                        context->Rip = base + 0x57f693;
+                        return EXCEPTION_CONTINUE_EXECUTION;
+                    }
                 }
             }
         }
@@ -346,7 +352,9 @@ extern "C" int SDL_main(int, char **)
         if (add_veh) add_veh(1, (host_veh_handler_t)log_vectored_exception);
     }
     SetUnhandledExceptionFilter(log_unhandled_exception);
-    host_logf(HOST_LOG_INFO, "OpenCE UWP x64 host 1.5.7.5 starting");
+    _putenv("DXIL_DEBUG=verbose");
+    _putenv("MESA_DEBUG=1");
+    host_logf(HOST_LOG_INFO, "OpenCE UWP x64 host 1.5.7.6 starting");
     int physical_width = 1920, physical_height = 1080;
     uwp_SetScreenSize(physical_width, physical_height);
     host_sdl_set_backbuffer_size(physical_width, physical_height);
