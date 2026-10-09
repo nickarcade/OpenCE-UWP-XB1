@@ -10,7 +10,7 @@ on:
       version:
         description: "Release Version"
         required: true
-        default: "1.5.7.3"
+        default: "1.5.7.4"
 
 permissions:
   contents: write
