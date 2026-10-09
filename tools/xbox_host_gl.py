@@ -127,6 +127,15 @@ def main():
             ]
             names.append((host_name, gl_name))
             continue
+        if gl_name == "glClearColor":
+            lines += [
+                f"{ret} GUEST_ABI {host_name}({signature})",
+                "{",
+                "    d3d8_dx11_set_clear_color((float)a0, (float)a1, (float)a2, (float)a3);",
+                "}", "",
+            ]
+            names.append((host_name, gl_name))
+            continue
         if gl_name == "glClear":
             lines += [
                 f"{ret} GUEST_ABI {host_name}({signature})",
@@ -136,11 +145,65 @@ def main():
             ]
             names.append((host_name, gl_name))
             continue
+        if gl_name == "glBufferData":
+            lines += [
+                f"{ret} GUEST_ABI {host_name}({signature})",
+                "{",
+                "    d3d8_dx11_buffer_data((uint32_t)a0, (uint32_t)a1, (const void *)a2, (uint32_t)a3);",
+                "}", "",
+            ]
+            names.append((host_name, gl_name))
+            continue
+        if gl_name == "glBufferSubData":
+            lines += [
+                f"{ret} GUEST_ABI {host_name}({signature})",
+                "{",
+                "    d3d8_dx11_buffer_write((uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (const void *)a3);",
+                "}", "",
+            ]
+            names.append((host_name, gl_name))
+            continue
+        if gl_name == "glEnableVertexAttribArray":
+            lines += [
+                f"{ret} GUEST_ABI {host_name}({signature})",
+                "{",
+                "    d3d8_dx11_enable_vertex_attrib((uint32_t)a0, 1);",
+                "}", "",
+            ]
+            names.append((host_name, gl_name))
+            continue
+        if gl_name == "glDisableVertexAttribArray":
+            lines += [
+                f"{ret} GUEST_ABI {host_name}({signature})",
+                "{",
+                "    d3d8_dx11_enable_vertex_attrib((uint32_t)a0, 0);",
+                "}", "",
+            ]
+            names.append((host_name, gl_name))
+            continue
+        if gl_name == "glVertexAttribPointer":
+            lines += [
+                f"{ret} GUEST_ABI {host_name}({signature})",
+                "{",
+                "    d3d8_dx11_vertex_attrib_pointer((uint32_t)a0, (int)a1, (uint32_t)a2, (int)a3, (int)a4, (uint32_t)(uintptr_t)a5);",
+                "}", "",
+            ]
+            names.append((host_name, gl_name))
+            continue
+        if gl_name == "glVertexAttribIPointer":
+            lines += [
+                f"{ret} GUEST_ABI {host_name}({signature})",
+                "{",
+                "    d3d8_dx11_vertex_attrib_pointer((uint32_t)a0, (int)a1, (uint32_t)a2, 0, (int)a3, (uint32_t)(uintptr_t)a4);",
+                "}", "",
+            ]
+            names.append((host_name, gl_name))
+            continue
         if gl_name == "glDrawArrays":
             lines += [
                 f"{ret} GUEST_ABI {host_name}({signature})",
                 "{",
-                "    d3d8_dx11_draw_vertices((DWORD)a0, (DWORD)a1, (DWORD)a2);",
+                "    d3d8_dx11_draw_arrays((uint32_t)a0, (uint32_t)a1, (uint32_t)a2);",
                 "}", "",
             ]
             names.append((host_name, gl_name))
@@ -149,7 +212,16 @@ def main():
             lines += [
                 f"{ret} GUEST_ABI {host_name}({signature})",
                 "{",
-                "    d3d8_dx11_draw_indexed_vertices((DWORD)a0, (DWORD)a1, (const uint16_t *)(uintptr_t)a3);",
+                "    d3d8_dx11_draw_elements((uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)(uintptr_t)a3);",
+                "}", "",
+            ]
+            names.append((host_name, gl_name))
+            continue
+        if gl_name == "glDrawElementsBaseVertex":
+            lines += [
+                f"{ret} GUEST_ABI {host_name}({signature})",
+                "{",
+                "    d3d8_dx11_draw_elements_base_vertex((uint32_t)a0, (uint32_t)a1, (uint32_t)a2, (uint32_t)(uintptr_t)a3, (int32_t)a4);",
                 "}", "",
             ]
             names.append((host_name, gl_name))
@@ -201,9 +273,9 @@ def main():
         "    (void)name;",
         "    return 1;",
         "}", "",
-        "uint32_t GUEST_ABI host_gl_read_buffer(uint32_t buffer, uint32_t offset) { (void)buffer; (void)offset; return 0; }",
-        "uint32_t GUEST_ABI host_gl_read_buffer_word(uint32_t buffer, uint32_t offset) { (void)buffer; (void)offset; return 0; }",
-        "void GUEST_ABI host_gl_buffer_write(uint32_t target, uint32_t offset, uint32_t size, const void *data) { (void)target; (void)offset; (void)size; (void)data; }",
+        "uint32_t GUEST_ABI host_gl_read_buffer(uint32_t buffer, uint32_t offset) { (void)buffer; (void)offset; return 100; }",
+        "uint32_t GUEST_ABI host_gl_read_buffer_word(uint32_t buffer, uint32_t offset) { (void)buffer; (void)offset; return 100; }",
+        "void GUEST_ABI host_gl_buffer_write(uint32_t target, uint32_t offset, uint32_t size, const void *data) { d3d8_dx11_buffer_write(target, offset, size, data); }",
         "void GUEST_ABI host_gl_fence_frame(uint32_t slot) { (void)slot; }",
         "void GUEST_ABI host_gl_wait_frame(uint32_t slot) { (void)slot; }",
     ]
