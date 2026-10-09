@@ -338,9 +338,6 @@ extern "C" int SDL_main(int, char **)
     std::filesystem::path local(local_w.c_str());
     std::filesystem::path internal = local / L"OpenCE";
     open_log_at(internal);
-    _putenv("D3D12_DEBUG=experimental");
-    _putenv("DXIL_DEBUG=verbose");
-    _putenv("MESA_DEBUG=1");
     typedef LONG (WINAPI *host_veh_handler_t)(struct _EXCEPTION_POINTERS *ExceptionInfo);
     typedef PVOID (WINAPI *host_aveh_t)(ULONG First, host_veh_handler_t Handler);
     HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
@@ -349,7 +346,7 @@ extern "C" int SDL_main(int, char **)
         if (add_veh) add_veh(1, (host_veh_handler_t)log_vectored_exception);
     }
     SetUnhandledExceptionFilter(log_unhandled_exception);
-    host_logf(HOST_LOG_INFO, "OpenCE UWP x64 host 1.5.7.4 starting");
+    host_logf(HOST_LOG_INFO, "OpenCE UWP x64 host 1.5.7.5 starting");
     int physical_width = 1920, physical_height = 1080;
     uwp_SetScreenSize(physical_width, physical_height);
     host_sdl_set_backbuffer_size(physical_width, physical_height);
