@@ -1,5 +1,4 @@
 #include "host.h"
-#include "d3d8_dx11.h"
 #include <SDL.h>
 #include <windows.h>
 #include <string.h>
@@ -61,7 +60,7 @@ void GUEST_ABI host_sdl_window_size_in_pixels(uint32_t window, int *width, int *
     *width = backbuffer_width;
     *height = backbuffer_height;
     if (!InterlockedExchange(&logged, 1))
-        host_logf(HOST_LOG_INFO, "Xbox Direct3D 11 backbuffer size reported: %dx%d",
+        host_logf(HOST_LOG_INFO, "Xbox ANGLE EGL backbuffer size reported: %dx%d",
             *width, *height);
 }
 int GUEST_ABI host_sdl_set_relative_mouse(uint32_t window, int enabled)
@@ -71,14 +70,14 @@ int GUEST_ABI host_sdl_gl_set_attribute(int attribute, int value)
 uint32_t GUEST_ABI host_sdl_gl_create_context(uint32_t window)
 {
     (void)window;
-    host_logf(HOST_LOG_INFO, "Xbox Direct3D 11 native context active for guest");
-    return handle_new(HANDLE_CONTEXT, (void *)(uintptr_t)0xD3D11);
+    host_logf(HOST_LOG_INFO, "Xbox ANGLE EGL context active for guest");
+    return handle_new(HANDLE_CONTEXT, (void *)(uintptr_t)1);
 }
 int GUEST_ABI host_sdl_gl_make_current(uint32_t window, uint32_t context)
 { (void)window; (void)context; return 1; }
 int GUEST_ABI host_sdl_gl_set_swap_interval(int interval)
 {
-    host_logf(HOST_LOG_INFO, "Xbox presentation: swap interval %d accepted (Direct3D 11)", interval);
+    host_logf(HOST_LOG_INFO, "Xbox presentation: swap interval %d accepted (ANGLE EGL)", interval);
     return 1;
 }
 int GUEST_ABI host_sdl_gl_swap_window(uint32_t window)
@@ -89,7 +88,7 @@ int GUEST_ABI host_sdl_gl_swap_window(uint32_t window)
     LARGE_INTEGER now;
     (void)window;
 
-    d3d8_dx11_present(1);
+    host_egl_swap_buffers();
     if (!frequency.QuadPart) {
         QueryPerformanceFrequency(&frequency);
         QueryPerformanceCounter(&started);

@@ -1,6 +1,11 @@
 #include "host.h"
 #include "xiso_installer.h"
-#include "d3d8_dx11.h"
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#if __has_include(<EGL/eglext_angle.h>)
+#include <EGL/eglext_angle.h>
+#endif
+#include <GLES3/gl3.h>
 #include <SDL.h>
 #include <libuwp.h>
 #include <windows.h>
@@ -101,13 +106,6 @@ static void open_log_at(const std::filesystem::path &root)
     std::error_code error;
     std::filesystem::create_directories(root, error);
     log_file = _wfsopen((root / L"opence.log").c_str(), L"w", _SH_DENYNO);
-    if (log_file) {
-        int fd = _fileno(log_file);
-        if (fd >= 0) {
-            _dup2(fd, 1);
-            _dup2(fd, 2);
-        }
-    }
 }
 
 extern "C" int GUEST_ABI host_decompress_map(const char *source_path,
@@ -210,46 +208,119 @@ extern "C" int GUEST_ABI host_decompress_map(const char *source_path,
     return 1;
 }
 
-static LONG WINAPI log_vectored_exception(EXCEPTION_POINTERS *details)
-{
-    if (details && details->ExceptionRecord && details->ContextRecord) {
-        DWORD code = details->ExceptionRecord->ExceptionCode;
-        if (code == EXCEPTION_ACCESS_VIOLATION ||
-            code == EXCEPTION_ILLEGAL_INSTRUCTION ||
-            code == EXCEPTION_INT_DIVIDE_BY_ZERO ||
-            code == EXCEPTION_STACK_OVERFLOW ||
-            code == 0xC0000008 /* STATUS_INVALID_HANDLE */) {
-            const EXCEPTION_RECORD *record = details->ExceptionRecord;
-            PCONTEXT context = details->ContextRecord;
-            host_logf(HOST_LOG_ERROR,
-                "FATAL EXCEPTION code=%08lx address=%p rip=%016llx rsp=%016llx "
-                "rax=%016llx rbx=%016llx rcx=%016llx rdx=%016llx rsi=%016llx rdi=%016llx",
-                record->ExceptionCode, record->ExceptionAddress,
-                context->Rip, context->Rsp, context->Rax, context->Rbx,
-                context->Rcx, context->Rdx, context->Rsi, context->Rdi);
+static EGLDisplay g_egl_display = EGL_NO_DISPLAY;
+static EGLConfig  g_egl_config  = nullptr;
+static EGLContext g_egl_context = EGL_NO_CONTEXT;
+static EGLSurface g_egl_surface = EGL_NO_SURFACE;
 
-            if (code == EXCEPTION_ACCESS_VIOLATION) {
-                HMODULE gallium = GetModuleHandleW(L"libgallium_wgl.dll");
-                if (gallium) {
-                    uintptr_t base = (uintptr_t)gallium;
-                    uintptr_t fault_addr = (uintptr_t)record->ExceptionAddress;
-                    if (fault_addr == base + 0x586685) {
-                        host_logf(HOST_LOG_WARN,
-                            "recovered from libgallium_wgl NULL shader dereference at RVA 0x586685; advancing Rip");
-                        context->Rip = fault_addr + 0x19;
-                        return EXCEPTION_CONTINUE_EXECUTION;
-                    }
-                    if (fault_addr == base + 0x57f68a) {
-                        host_logf(HOST_LOG_WARN,
-                            "recovered from libgallium_wgl NULL shader dereference at RVA 0x57f68a; advancing Rip");
-                        context->Rip = base + 0x57f693;
-                        return EXCEPTION_CONTINUE_EXECUTION;
-                    }
-                }
-            }
+extern "C" int host_egl_initialize(void)
+{
+    if (g_egl_display != EGL_NO_DISPLAY && g_egl_context != EGL_NO_CONTEXT && g_egl_surface != EGL_NO_SURFACE)
+        return 1;
+
+    const EGLint displayAttributes[] = {
+        EGL_PLATFORM_ANGLE_TYPE_ANGLE,                  EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE,
+        EGL_PLATFORM_ANGLE_DEVICE_TYPE_ANGLE,            EGL_PLATFORM_ANGLE_DEVICE_TYPE_HARDWARE_ANGLE,
+        EGL_PLATFORM_ANGLE_ENABLE_AUTOMATIC_TRIM_ANGLE,  EGL_TRUE,
+        EGL_NONE,
+    };
+
+    PFNEGLGETPLATFORMDISPLAYEXTPROC getPlatformDisplay =
+        reinterpret_cast<PFNEGLGETPLATFORMDISPLAYEXTPROC>(eglGetProcAddress("eglGetPlatformDisplayEXT"));
+    if (getPlatformDisplay) {
+        g_egl_display = getPlatformDisplay(EGL_PLATFORM_ANGLE_ANGLE, EGL_DEFAULT_DISPLAY, displayAttributes);
+    } else {
+        g_egl_display = eglGetPlatformDisplayEXT(EGL_PLATFORM_ANGLE_ANGLE, EGL_DEFAULT_DISPLAY, displayAttributes);
+    }
+
+    if (g_egl_display == EGL_NO_DISPLAY) {
+        g_egl_display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    }
+    if (g_egl_display == EGL_NO_DISPLAY) {
+        host_logf(HOST_LOG_ERROR, "EGL: failed to obtain EGL display (error 0x%x)", eglGetError());
+        return 0;
+    }
+
+    EGLint major = 0, minor = 0;
+    if (!eglInitialize(g_egl_display, &major, &minor)) {
+        host_logf(HOST_LOG_ERROR, "EGL: failed to initialize EGL display (error 0x%x)", eglGetError());
+        return 0;
+    }
+    host_logf(HOST_LOG_INFO, "EGL: initialized display version %d.%d (Microsoft ANGLE D3D11)", major, minor);
+
+    const EGLint configAttributes[] = {
+        EGL_RED_SIZE, 8,
+        EGL_GREEN_SIZE, 8,
+        EGL_BLUE_SIZE, 8,
+        EGL_ALPHA_SIZE, 8,
+        EGL_DEPTH_SIZE, 24,
+        EGL_STENCIL_SIZE, 8,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
+        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+        EGL_NONE,
+    };
+
+    EGLint num_configs = 0;
+    if (!eglChooseConfig(g_egl_display, configAttributes, &g_egl_config, 1, &num_configs) || num_configs < 1) {
+        const EGLint fallbackConfigAttributes[] = {
+            EGL_RED_SIZE, 8,
+            EGL_GREEN_SIZE, 8,
+            EGL_BLUE_SIZE, 8,
+            EGL_ALPHA_SIZE, 8,
+            EGL_DEPTH_SIZE, 24,
+            EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
+            EGL_NONE,
+        };
+        if (!eglChooseConfig(g_egl_display, fallbackConfigAttributes, &g_egl_config, 1, &num_configs) || num_configs < 1) {
+            host_logf(HOST_LOG_ERROR, "EGL: failed to choose GLES 3.0 config (error 0x%x)", eglGetError());
+            return 0;
         }
     }
-    return EXCEPTION_CONTINUE_SEARCH;
+
+    const EGLint contextAttributes[] = {
+        EGL_CONTEXT_CLIENT_VERSION, 3,
+        EGL_NONE,
+    };
+    g_egl_context = eglCreateContext(g_egl_display, g_egl_config, EGL_NO_CONTEXT, contextAttributes);
+    if (g_egl_context == EGL_NO_CONTEXT) {
+        host_logf(HOST_LOG_ERROR, "EGL: failed to create GLES 3.0 context (error 0x%x)", eglGetError());
+        return 0;
+    }
+
+    winrt::com_ptr<::IInspectable> inspectable;
+    if (auto core = winrt::Windows::UI::Core::CoreWindow::GetForCurrentThread())
+        inspectable = core.as<::IInspectable>();
+    IInspectable *window = inspectable.get();
+    if (!window) {
+        host_logf(HOST_LOG_ERROR, "EGL: failed to get CoreWindow IInspectable");
+        return 0;
+    }
+
+    g_egl_surface = eglCreateWindowSurface(g_egl_display, g_egl_config, static_cast<EGLNativeWindowType>(window), nullptr);
+    if (g_egl_surface == EGL_NO_SURFACE) {
+        host_logf(HOST_LOG_ERROR, "EGL: failed to create window surface (error 0x%x)", eglGetError());
+        return 0;
+    }
+
+    if (!eglMakeCurrent(g_egl_display, g_egl_surface, g_egl_surface, g_egl_context)) {
+        host_logf(HOST_LOG_ERROR, "EGL: failed to make current context (error 0x%x)", eglGetError());
+        return 0;
+    }
+
+    host_logf(HOST_LOG_INFO, "EGL: ANGLE D3D11 / GLES 3.0 context and surface current");
+    return 1;
+}
+
+extern "C" void host_egl_swap_buffers(void)
+{
+    if (g_egl_display != EGL_NO_DISPLAY && g_egl_surface != EGL_NO_SURFACE) {
+        eglSwapBuffers(g_egl_display, g_egl_surface);
+    }
+}
+
+extern "C" void *host_egl_get_proc_address(const char *procname)
+{
+    return reinterpret_cast<void *>(eglGetProcAddress(procname));
 }
 
 static LONG WINAPI log_unhandled_exception(EXCEPTION_POINTERS *details)
@@ -346,28 +417,19 @@ extern "C" int SDL_main(int, char **)
     std::filesystem::path local(local_w.c_str());
     std::filesystem::path internal = local / L"OpenCE";
     open_log_at(internal);
-    typedef LONG (WINAPI *host_veh_handler_t)(struct _EXCEPTION_POINTERS *ExceptionInfo);
-    typedef PVOID (WINAPI *host_aveh_t)(ULONG First, host_veh_handler_t Handler);
-    HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
-    if (kernel32) {
-        host_aveh_t add_veh = (host_aveh_t)GetProcAddress(kernel32, "AddVectoredExceptionHandler");
-        if (add_veh) add_veh(1, (host_veh_handler_t)log_vectored_exception);
-    }
-    host_logf(HOST_LOG_INFO, "OpenCE UWP x64 host starting (Native Direct3D 11 backend)");
+    host_logf(HOST_LOG_INFO, "OpenCE UWP x64 host starting (Microsoft ANGLE D3D11 / GLES 3.0 backend)");
     int physical_width = 1920, physical_height = 1080;
     uwp_SetScreenSize(physical_width, physical_height);
     host_sdl_set_backbuffer_size(physical_width, physical_height);
-    void *core_window = nullptr;
-    if (auto core = winrt::Windows::UI::Core::CoreWindow::GetForCurrentThread())
-        core_window = winrt::get_abi(core);
-    if (d3d8_dx11_initialize_uwp(core_window, physical_width, physical_height)) {
-        host_logf(HOST_LOG_INFO, "Direct3D 11 backend initialized successfully (%dx%d)", physical_width, physical_height);
+
+    if (host_egl_initialize()) {
+        host_logf(HOST_LOG_INFO, "ANGLE D3D11 EGL display initialized successfully (%dx%d)", physical_width, physical_height);
     } else {
-        host_logf(HOST_LOG_ERROR, "Direct3D 11 backend initialization failed");
+        host_logf(HOST_LOG_ERROR, "ANGLE D3D11 EGL display initialization failed");
     }
     SDL_SetMainReady();
     host_logf(HOST_LOG_INFO, "UWP display initialized at %dx%d", physical_width, physical_height);
-    for (const wchar_t *library : { L"libuwp.dll" }) {
+    for (const wchar_t *library : { L"libuwp.dll", L"libEGL.dll", L"libGLESv2.dll" }) {
         SetLastError(ERROR_SUCCESS);
         HMODULE module = LoadPackagedLibrary(library, 0);
         host_logf(module ? HOST_LOG_INFO : HOST_LOG_ERROR,

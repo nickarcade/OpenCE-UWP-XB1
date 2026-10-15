@@ -24,14 +24,11 @@ concurrency:
 env:
   UWP_DEPS_REPOSITORY: https://github.com/worleydl/uwp-dep.git
   UWP_DEPS_COMMIT: 3960693ee292522a5bcb58bc7d4136a0bb8864af
-  GL_HEADERS_REPOSITORY: https://github.com/KhronosGroup/OpenGL-Registry.git
-  GL_HEADERS_COMMIT: 6af574a14089ccfee87efe230ebcdd8742859813
-  EGL_HEADERS_REPOSITORY: https://github.com/KhronosGroup/EGL-Registry.git
-  EGL_HEADERS_COMMIT: db3425b8246136faccb5e2782b5694960bd6edf1
+  ANGLE_NUGET_URL: https://api.nuget.org/v3-flatcontainer/angle.windowsstore/2.1.13/angle.windowsstore.2.1.13.nupkg
 
 jobs:
   build:
-    runs-on: windows-2025
+    runs-on: windows-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
@@ -45,7 +42,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $release = .\tools\resolve_uwp_release.ps1 | ConvertFrom-Json
-          $releaseTag = "uwp-$($release.Tag)"
+          $releaseTag = if ($release.Tag -like 'v*') { $release.Tag } else { "uwp-$($release.Tag)" }
           $headers = @{
               Accept = 'application/vnd.github+json'
               Authorization = "Bearer $env:GH_TOKEN"
@@ -68,7 +65,8 @@ jobs:
         env:
           EXISTS: ${{ steps.release.outputs.exists }}
         run: |
-          $build = $env:EXISTS -ne 'true'
+          $isPushOrDispatch = '${{ github.event_name }}' -in @('push', 'workflow_dispatch')
+          $build = $isPushOrDispatch -or ($env:EXISTS -ne 'true')
           "build=$($build.ToString().ToLowerInvariant())" | Out-File $env:GITHUB_OUTPUT -Append
           if (-not $build) { Write-Output 'No unpublished OpenCE update is eligible.' }
 
@@ -109,77 +107,30 @@ jobs:
               throw 'Unexpected UWP dependency revision.'
           }
 
-      - name: Patch Mesa for Xbox One Shader Model 6.0
+      - name: Fetch ANGLE UWP dependencies
         if: steps.gate.outputs.build == 'true'
         shell: pwsh
         run: |
-          $dll = "uwp-deps\x64\bin\libgallium_wgl.dll"
-          if (Test-Path -LiteralPath $dll) {
-              $bytes = [IO.File]::ReadAllBytes($dll)
-              $patched = $false
+          $nupkgPath = Join-Path $env:RUNNER_TEMP "angle.windowsstore.zip"
+          Invoke-WebRequest -Uri $env:ANGLE_NUGET_URL -OutFile $nupkgPath
+          $extractPath = Join-Path $env:RUNNER_TEMP "angle-extract"
+          Expand-Archive -Path $nupkgPath -DestinationPath $extractPath -Force
 
-              # Patch 1: Fallback to SM 6.0 when CheckFeatureSupport fails in d3d12_screen_create (offset 0x0057c6b3: eb 1a -> 90 90)
-              if ($bytes.Length -gt 0x0057c6b4 -and $bytes[0x0057c6b3] -eq 0xeb -and $bytes[0x0057c6b4] -eq 0x1a) {
-                  $bytes[0x0057c6b3] = 0x90
-                  $bytes[0x0057c6b4] = 0x90
-                  $patched = $true
-                  Write-Output "Applied Patch 1: SM query fallback to SM6.0 at 0x0057c6b3."
-              }
+          $targetDir = "UWP/xbox/third_party/angle"
+          New-Item -ItemType Directory -Path "$targetDir/include" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$targetDir/bin" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$targetDir/lib" -Force | Out-Null
 
-              # Patch 2: Enforce SM 6.0 in nir_to_dxil options check (offset 0x005bfa48)
-              if ($bytes.Length -gt (0x005bfa48 + 26) -and $bytes[0x005bfa48] -eq 0x41 -and $bytes[0x005bfa49] -eq 0x8b) {
-                  $bytes[0x005bfa48] = 0xb8
-                  $bytes[0x005bfa49] = 0x00
-                  $bytes[0x005bfa4a] = 0x00
-                  $bytes[0x005bfa4b] = 0x06
-                  $bytes[0x005bfa4c] = 0x00
-                  $bytes[0x005bfa4d] = 0x41
-                  $bytes[0x005bfa4e] = 0x89
-                  $bytes[0x005bfa4f] = 0x47
-                  $bytes[0x005bfa50] = 0x14
-                  for ($i = 0; $i -lt 17; $i++) {
-                      $bytes[0x005bfa51 + $i] = 0x90
-                  }
-                  $patched = $true
-                  Write-Output "Applied Patch 2: Enforce SM6.0 in nir_to_dxil at 0x005bfa48."
-              }
-
-              # Patch 3: Bypass SM 6.2 requirement for 16-bit types in emit_module (offset 0x005badd5: 73 50 -> eb 50)
-              if ($bytes.Length -gt 0x005badd6 -and $bytes[0x005badd5] -eq 0x73 -and $bytes[0x005badd6] -eq 0x50) {
-                  $bytes[0x005badd5] = 0xeb
-                  $patched = $true
-                  Write-Output "Applied Patch 3: Bypass 16-bit SM6.2 check in emit_module at 0x005badd5."
-              }
-
-              if ($patched) {
-                  [IO.File]::WriteAllBytes($dll, $bytes)
-                  Write-Output "Successfully wrote patched $dll for Xbox One SM6.0."
-              }
-          }
-
-      - name: Fetch GLES headers
-        if: steps.gate.outputs.build == 'true'
-        shell: pwsh
-        run: |
-          git clone --filter=blob:none --no-checkout $env:GL_HEADERS_REPOSITORY gl-headers
-          git -C gl-headers sparse-checkout set api/GLES2 api/GLES3
-          git -C gl-headers checkout --detach $env:GL_HEADERS_COMMIT
-          if ((git -C gl-headers rev-parse HEAD) -ne $env:GL_HEADERS_COMMIT) {
-              throw 'Unexpected OpenGL header revision.'
-          }
-          git clone --filter=blob:none --no-checkout $env:EGL_HEADERS_REPOSITORY egl-headers
-          git -C egl-headers sparse-checkout set api/KHR
-          git -C egl-headers checkout --detach $env:EGL_HEADERS_COMMIT
-          if ((git -C egl-headers rev-parse HEAD) -ne $env:EGL_HEADERS_COMMIT) {
-              throw 'Unexpected EGL header revision.'
-          }
-          Copy-Item -Recurse egl-headers\api\KHR gl-headers\api\KHR
+          Copy-Item -Path "$extractPath/Include/*" -Destination "$targetDir/include" -Recurse -Force
+          Copy-Item -Path "$extractPath/bin/UAP/x64/*" -Destination "$targetDir/bin" -Force
+          Copy-Item -Path "$extractPath/bin/UAP/x64/*" -Destination "$targetDir/lib" -Force
+          Write-Host "ANGLE.WindowsStore binaries and headers extracted to $targetDir."
 
       - name: Prepare OpenCE source
         if: steps.gate.outputs.build == 'true'
         shell: pwsh
         run: |
-          .\tools\setup_upstream.ps1 -Revision '${{ steps.release.outputs.tag }}'
+          .\tools\setup_upstream.ps1 -Revision '${{ steps.release.outputs.commit }}'
           $utf8 = [Text.UTF8Encoding]::new($false)
           $manifestPath = 'upstream\port\xbox\Package.appxmanifest'
           $manifest = Get-Content $manifestPath -Raw
@@ -187,7 +138,7 @@ jobs:
           [IO.File]::WriteAllText($manifestPath, $manifest, $utf8)
           $hostPath = 'upstream\port\xbox\host\host_main.cpp'
           $hostSource = Get-Content $hostPath -Raw
-          $hostSource = $hostSource -replace 'OpenCE UWP x64 host \d+\.\d+\.\d+\.\d+ starting', 'OpenCE UWP x64 host ${{ steps.release.outputs.version }} starting'
+          $hostSource = $hostSource -replace 'OpenCE UWP x64 host (starting|\d+\.\d+\.\d+\.\d+ starting)', 'OpenCE UWP x64 host ${{ steps.release.outputs.version }} starting'
           [IO.File]::WriteAllText($hostPath, $hostSource, $utf8)
 
       - name: Build UWP
@@ -195,7 +146,7 @@ jobs:
         if: steps.gate.outputs.build == 'true'
         shell: pwsh
         env:
-          HALO_XBOX_GLES_INCLUDE: ${{ github.workspace }}\gl-headers\api
+          HALO_XBOX_GLES_INCLUDE: ${{ github.workspace }}\UWP\xbox\third_party\angle\include
         run: |
           $log = Join-Path $env:RUNNER_TEMP 'uwp-build.log'
           $ErrorActionPreference = 'Continue'
@@ -269,10 +220,27 @@ jobs:
         with:
           name: OpenCE-UWP-${{ steps.release.outputs.version }}
           path: |
+            dist/OpenCE-UWP-${{ steps.release.outputs.version }}/OpenCE-UWP-x64.appx
+            dist/OpenCE-UWP-${{ steps.release.outputs.version }}/OpenCE-UWP.cer
+            dist/OpenCE-UWP-${{ steps.release.outputs.version }}/Dependencies/
             dist/OpenCE-UWP-${{ steps.release.outputs.version }}.zip
             dist/OpenCE-UWP-${{ steps.release.outputs.version }}.zip.sha256
           if-no-files-found: error
           retention-days: 7
+
+      - name: Deploy to Xbox Dev Mode (Optional / Self-Hosted / Tailscale)
+        if: steps.gate.outputs.build == 'true' && (env.XBOX_ENDPOINT != '' || env.XBOX_IP != '')
+        shell: pwsh
+        env:
+          XBOX_ENDPOINT: ${{ vars.XBOX_ENDPOINT || secrets.XBOX_ENDPOINT }}
+          XBOX_USERNAME: ${{ secrets.XBOX_USERNAME }}
+          XBOX_PASSWORD: ${{ secrets.XBOX_PASSWORD }}
+        run: |
+          $endpoint = if ($env:XBOX_ENDPOINT) { $env:XBOX_ENDPOINT } else { "https://$($env.XBOX_IP):11443" }
+          $output = "dist\OpenCE-UWP-${{ steps.release.outputs.version }}"
+          $package = "$output\OpenCE-UWP-x64.appx"
+          .\tools\deploy_xbox.ps1 -ConsoleEndpoint $endpoint -PackagePath $package `
+            -Username $env:XBOX_USERNAME -Password $env:XBOX_PASSWORD
 
       - name: Publish release
         if: >-

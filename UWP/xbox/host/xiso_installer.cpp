@@ -5,10 +5,10 @@
 #include <Windows.h>
 #include <SDL.h>
 #include <imgui.h>
-#include <imgui_impl_dx11.h>
+#include <imgui_impl_opengl3.h>
 #include <imgui_impl_sdl2.h>
-#include "d3d8_dx11.h"
-#include <d3d11.h>
+#include <EGL/egl.h>
+#include <GLES3/gl3.h>
 #include <libuwp.h>
 #include <winrt/base.h>
 #include <winrt/Windows.Foundation.h>
@@ -185,18 +185,15 @@ public:
         }
         ui_scale_ = std::clamp(float(screen_height_) / 1080.0f, 1.0f, 2.0f);
         uwp_SetScreenSize(screen_width_, screen_height_);
-        host_logf(HOST_LOG_INFO, "installer progress: Xbox output requested at %dx%d (Direct3D 11)",
+        host_logf(HOST_LOG_INFO, "installer progress: Xbox output requested at %dx%d (ANGLE GLES 3.0)",
             screen_width_, screen_height_);
         if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
             host_logf(HOST_LOG_ERROR, "installer: SDL initialization failed: %s", SDL_GetError());
             return;
         }
 
-        void *core_window = nullptr;
-        if (auto core = CoreWindow::GetForCurrentThread())
-            core_window = winrt::get_abi(core);
-        if (!d3d8_dx11_initialize_uwp(core_window, screen_width_, screen_height_)) {
-            host_logf(HOST_LOG_ERROR, "installer: Direct3D 11 initialization failed");
+        if (!host_egl_initialize()) {
+            host_logf(HOST_LOG_ERROR, "installer: ANGLE EGL initialization failed");
             return;
         }
 
@@ -224,16 +221,15 @@ public:
         style.Colors[ImGuiCol_PlotHistogram] = ImVec4(0.08f, 0.68f, 0.12f, 1.0f);
         style.Colors[ImGuiCol_FrameBg] = ImVec4(0.07f, 0.14f, 0.08f, 1.0f);
         style.ScaleAllSizes(ui_scale_);
-        imgui_ready_ = ImGui_ImplSDL2_InitForOther(window_) &&
-            ImGui_ImplDX11_Init(static_cast<ID3D11Device *>(d3d8_dx11_get_device()),
-                                static_cast<ID3D11DeviceContext *>(d3d8_dx11_get_context()));
+        imgui_ready_ = ImGui_ImplSDL2_InitForOpenGL(window_, nullptr) &&
+            ImGui_ImplOpenGL3_Init("#version 300 es");
         draw(0, 1);
     }
 
     ~progress_window()
     {
         if (imgui_ready_) {
-            ImGui_ImplDX11_Shutdown();
+            ImGui_ImplOpenGL3_Shutdown();
             ImGui_ImplSDL2_Shutdown();
         }
         if (ImGui::GetCurrentContext())
@@ -261,7 +257,7 @@ public:
             static_cast<unsigned long long>(percent));
         SDL_SetWindowTitle(window_, title);
 
-        ImGui_ImplDX11_NewFrame();
+        ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
         auto &io = ImGui::GetIO();
@@ -283,15 +279,16 @@ public:
             ImVec2(-1.0f, 46.0f * ui_scale_), overlay);
         ImGui::End();
         ImGui::Render();
-        d3d8_dx11_set_viewport(0, 0, screen_width_, screen_height_, 0.0f, 1.0f);
-        d3d8_dx11_clear(1, 0xFF040C05, 1.0f, 0);
-        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-        d3d8_dx11_present(1);
+        glViewport(0, 0, screen_width_, screen_height_);
+        glClearColor(4.0f / 255.0f, 12.0f / 255.0f, 5.0f / 255.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        host_egl_swap_buffers();
         if (!logged_dimensions_) {
             int window_width = 0, window_height = 0;
             SDL_GetWindowSize(window_, &window_width, &window_height);
             host_logf(HOST_LOG_INFO,
-                "installer progress: window=%dx%d imgui=%.0fx%.0f scale=%.2f (Direct3D 11)",
+                "installer progress: window=%dx%d imgui=%.0fx%.0f scale=%.2f (ANGLE GLES 3.0)",
                 window_width, window_height,
                 io.DisplaySize.x, io.DisplaySize.y, ui_scale_);
             logged_dimensions_ = true;

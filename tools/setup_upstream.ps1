@@ -1,11 +1,12 @@
 param(
     [string]$SourceDirectory,
     [string]$Repository = 'https://github.com/OpenCommunityEdition/OpenCE.git',
-    [string]$Revision = 'ff47e47ad6f54bc533cee2a0fe57232c8f63d614',
+    [string]$Revision = '6d840473da6d0975e36a997858b597563811d785',
     [string]$ImGuiSource
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $Revision) { $Revision = '6d840473da6d0975e36a997858b597563811d785' }
 $root = Split-Path -Parent $PSScriptRoot
 if (-not $SourceDirectory) { $SourceDirectory = Join-Path $root 'upstream' }
 $SourceDirectory = [IO.Path]::GetFullPath($SourceDirectory)

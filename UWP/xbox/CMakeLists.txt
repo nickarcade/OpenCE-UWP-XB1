@@ -9,7 +9,8 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 20)
 
 get_filename_component(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
-set(UWP_DEPS "C:/bsuwp/_deps/uwpdep-src" CACHE PATH "SDL2/libuwp/Mesa UWP bundle")
+set(UWP_DEPS "C:/bsuwp/_deps/uwpdep-src" CACHE PATH "SDL2/libuwp bundle")
+set(ANGLE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/angle" CACHE PATH "ANGLE UWP directory")
 set(GENERATED "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${GENERATED}")
 
@@ -29,13 +30,12 @@ set(HOST_SOURCES
   "${REPO_ROOT}/build/xbox/host/host_import_table.c"
   "${REPO_ROOT}/port/windows/src/win32_files.c"
   "${REPO_ROOT}/port/windows/src/win32_net.c"
-  host/d3d8_dx11.cpp host/nv2a_hlsl.c
   "${GENERATED}/host_gl.c" "${GENERATED}/host_posix.c")
 
 set(IMGUI "${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui")
 list(APPEND HOST_SOURCES
   "${IMGUI}/imgui.cpp" "${IMGUI}/imgui_draw.cpp" "${IMGUI}/imgui_tables.cpp" "${IMGUI}/imgui_widgets.cpp"
-  "${IMGUI}/backends/imgui_impl_sdl2.cpp" "${IMGUI}/backends/imgui_impl_dx11.cpp")
+  "${IMGUI}/backends/imgui_impl_sdl2.cpp" "${IMGUI}/backends/imgui_impl_opengl3.cpp")
 
 set(WINRT_ENTRY "${CMAKE_CURRENT_BINARY_DIR}/winrt_main.obj")
 add_custom_command(OUTPUT "${WINRT_ENTRY}"
@@ -52,13 +52,29 @@ target_compile_definitions(OpenCEUWP PRIVATE WINAPI_FAMILY=WINAPI_FAMILY_APP NOM
 target_compile_options(OpenCEUWP PRIVATE $<$<COMPILE_LANGUAGE:C,CXX>:/W3>)
 target_include_directories(OpenCEUWP PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/host"
+  "${ANGLE_DIR}/include"
   "${REPO_ROOT}/port/android/include"
   "${REPO_ROOT}/port/windows/src"
   "${REPO_ROOT}/port/linux/src"
   "${IMGUI}" "${IMGUI}/backends"
   "${UWP_DEPS}/x64/include" "${UWP_DEPS}/x64/include/SDL2")
-target_link_directories(OpenCEUWP BEFORE PRIVATE "$ENV{VCToolsInstallDir}/lib/x64/store")
-target_link_libraries(OpenCEUWP PRIVATE WindowsApp d3d11 dxgi d3dcompiler bcrypt ws2_32 iphlpapi
+
+target_link_directories(OpenCEUWP BEFORE PRIVATE
+  "$ENV{VCToolsInstallDir}/lib/x64/store"
+  "${ANGLE_DIR}/lib"
+  "${ANGLE_DIR}/bin")
+
+set(ANGLE_LIBS)
+if(EXISTS "${ANGLE_DIR}/lib/libEGL.lib")
+  list(APPEND ANGLE_LIBS "${ANGLE_DIR}/lib/libEGL.lib" "${ANGLE_DIR}/lib/libGLESv2.lib")
+elseif(EXISTS "${ANGLE_DIR}/bin/libEGL.lib")
+  list(APPEND ANGLE_LIBS "${ANGLE_DIR}/bin/libEGL.lib" "${ANGLE_DIR}/bin/libGLESv2.lib")
+else()
+  list(APPEND ANGLE_LIBS libEGL libGLESv2)
+endif()
+
+target_link_libraries(OpenCEUWP PRIVATE WindowsApp bcrypt ws2_32 iphlpapi
+  ${ANGLE_LIBS}
   "${UWP_DEPS}/x64/lib/SDL2.lib" "${UWP_DEPS}/x64/lib/libuwp.lib")
 target_link_options(OpenCEUWP PRIVATE /APPCONTAINER /WINMD
   "/WINMDFILE:${CMAKE_CURRENT_BINARY_DIR}/OpenCEUWP.winmd")
@@ -66,6 +82,15 @@ target_link_options(OpenCEUWP PRIVATE /APPCONTAINER /WINMD
 foreach(runtime SDL2.dll libuwp.dll z-1.dll)
   add_custom_command(TARGET OpenCEUWP POST_BUILD COMMAND "${CMAKE_COMMAND}" -E copy_if_different
     "${UWP_DEPS}/x64/bin/${runtime}" "$<TARGET_FILE_DIR:OpenCEUWP>/${runtime}")
+endforeach()
+foreach(runtime libEGL.dll libGLESv2.dll)
+  if(EXISTS "${ANGLE_DIR}/bin/${runtime}")
+    add_custom_command(TARGET OpenCEUWP POST_BUILD COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+      "${ANGLE_DIR}/bin/${runtime}" "$<TARGET_FILE_DIR:OpenCEUWP>/${runtime}")
+  elseif(EXISTS "${ANGLE_DIR}/lib/${runtime}")
+    add_custom_command(TARGET OpenCEUWP POST_BUILD COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+      "${ANGLE_DIR}/lib/${runtime}" "$<TARGET_FILE_DIR:OpenCEUWP>/${runtime}")
+  endif()
 endforeach()
 add_custom_command(TARGET OpenCEUWP POST_BUILD COMMAND "${CMAKE_COMMAND}" -E copy_if_different
   "${REPO_ROOT}/build/xbox/halo_guest.elf" "$<TARGET_FILE_DIR:OpenCEUWP>/halo_guest.elf")

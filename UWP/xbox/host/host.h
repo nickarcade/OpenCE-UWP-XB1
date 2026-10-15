@@ -54,6 +54,9 @@ int GUEST_ABI host_thread_create(uint32_t guest_thread, uint32_t stack_size);
 void *host_resolve_import(const char *name);
 void *host_gl_resolve(const char *name);
 void host_sdl_set_backbuffer_size(int width, int height);
+int host_egl_initialize(void);
+void host_egl_swap_buffers(void);
+void *host_egl_get_proc_address(const char *procname);
 
 void GUEST_ABI host_memory_watch_initialize(void);
 void GUEST_ABI host_memory_watch_protect(uint32_t address, uint32_t size);
