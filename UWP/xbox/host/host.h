@@ -1,5 +1,12 @@
 #pragma once
 
+#ifndef GL_GLEXT_PROTOTYPES
+#define GL_GLEXT_PROTOTYPES 1
+#endif
+#ifndef EGL_EGLEXT_PROTOTYPES
+#define EGL_EGLEXT_PROTOTYPES 1
+#endif
+
 #include <stddef.h>
 #include <stdint.h>
 #include "halo_android_abi.h"
